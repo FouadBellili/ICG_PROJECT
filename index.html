@@ -1,0 +1,437 @@
+<!DOCTYPE html>
+<html lang="en">
+<!--
+    Frozen Frontier: An Alien Ice World Explorer
+    Introduction to Computer Graphics - 2025/2026
+    Based on J. Madeira's architecture - April 2021; Updated March 2024
+-->
+
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Frozen Frontier</title>
+    <link rel="stylesheet" href="style.css">
+
+    <script type="importmap">
+        {
+          "imports": {
+            "three": "https://threejs.org/build/three.module.js",
+            "three/addons/": "https://threejs.org/examples/jsm/"
+          }
+        }
+    </script>
+
+    <script type="module">
+
+        import * as THREE from "three";
+        import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+
+        // ─────────────────────────────────────────────
+        // Scene elements container
+        // ─────────────────────────────────────────────
+        const sceneElements = {
+            sceneGraph: null,
+            camera: null,
+            control: null,
+            renderer: null,
+        };
+
+        // ─────────────────────────────────────────────
+        // HELPER FUNCTIONS
+        // ─────────────────────────────────────────────
+        const helper = {
+
+            initEmptyScene: function (sceneElements) {
+
+                // ── Scene graph ──
+                sceneElements.sceneGraph = new THREE.Scene();
+                // Thin ice-blue atmospheric fog
+                sceneElements.sceneGraph.fog = new THREE.FogExp2(0x0a1a2e, 0.018);
+
+                // ── Camera ──
+                const width  = window.innerWidth;
+                const height = window.innerHeight;
+                const camera = new THREE.PerspectiveCamera(60, width / height, 0.1, 500);
+                sceneElements.camera = camera;
+                camera.position.set(0, 4, 14);
+                camera.lookAt(0, 0, 0);
+
+                // ── Illumination ──
+
+                // Dim cold ambient (deep space)
+                const ambientLight = new THREE.AmbientLight(0x0d1b3e, 0.8);
+                sceneElements.sceneGraph.add(ambientLight);
+
+                // Distant sun: cold white-blue, long shadows
+                const sunLight = new THREE.DirectionalLight(0xaad4ff, 2.5);
+                sunLight.position.set(-60, 40, -30);
+                sunLight.castShadow = true;
+                sunLight.shadow.mapSize.width  = 4096;
+                sunLight.shadow.mapSize.height = 4096;
+                sunLight.shadow.camera.near    = 0.5;
+                sunLight.shadow.camera.far     = 200;
+                sunLight.shadow.camera.left    = -60;
+                sunLight.shadow.camera.right   =  60;
+                sunLight.shadow.camera.top     =  60;
+                sunLight.shadow.camera.bottom  = -60;
+                sunLight.shadow.bias           = -0.001;
+                sunLight.name = "sun";
+                sceneElements.sceneGraph.add(sunLight);
+
+                // Subtle blue fill from opposite side (bounce light off ice)
+                const fillLight = new THREE.DirectionalLight(0x2244aa, 0.4);
+                fillLight.position.set(40, 10, 20);
+                sceneElements.sceneGraph.add(fillLight);
+
+                // ── Renderer ──
+                const renderer = new THREE.WebGLRenderer({ antialias: true });
+                sceneElements.renderer = renderer;
+                renderer.setPixelRatio(window.devicePixelRatio);
+                renderer.setClearColor(0x010510, 1.0);
+                renderer.setSize(width, height);
+                renderer.shadowMap.enabled = true;
+                renderer.shadowMap.type    = THREE.PCFSoftShadowMap;
+                renderer.toneMapping       = THREE.ACESFilmicToneMapping;
+                renderer.toneMappingExposure = 1.2;
+
+                // Attach to DOM
+                const htmlElement = document.querySelector("#Tag3DScene");
+                htmlElement.appendChild(renderer.domElement);
+
+                // ── Camera control ──
+                sceneElements.control = new OrbitControls(camera, renderer.domElement);
+                sceneElements.control.screenSpacePanning = true;
+                sceneElements.control.minDistance = 2;
+                sceneElements.control.maxDistance = 120;
+                sceneElements.control.maxPolarAngle = Math.PI / 2.05;
+            },
+
+            render: function (sceneElements) {
+                sceneElements.renderer.render(sceneElements.sceneGraph, sceneElements.camera);
+            },
+        };
+
+        // ─────────────────────────────────────────────
+        // FUNCTIONS FOR BUILDING THE SCENE
+        // ─────────────────────────────────────────────
+        const scene = {
+
+            load3DObjects: function (sceneGraph) {
+
+                // ══════════════════════════════════════
+                // 1. SPACE SKYBOX (procedural star field)
+                // ══════════════════════════════════════
+                scene.createStarField(sceneGraph);
+
+                // ══════════════════════════════════════
+                // 2. PROCEDURAL ICY TERRAIN (heightmap displacement)
+                // ══════════════════════════════════════
+                scene.createTerrain(sceneGraph);
+
+                // ══════════════════════════════════════
+                // 3. ICE SPIRES (alien formations)
+                // ══════════════════════════════════════
+                scene.createIceSpires(sceneGraph);
+
+                // ══════════════════════════════════════
+                // 4. DISTANT PLANET / SUN DISC (atmosphere)
+                // ══════════════════════════════════════
+                scene.createPlanetDisc(sceneGraph);
+            },
+
+            // ─── Star field ───────────────────────────
+            createStarField: function (sceneGraph) {
+                const starCount = 6000;
+                const positions = new Float32Array(starCount * 3);
+
+                for (let i = 0; i < starCount; i++) {
+                    const theta = Math.random() * Math.PI * 2;
+                    const phi   = Math.acos(2 * Math.random() - 1);
+                    const r     = 300 + Math.random() * 100;
+                    positions[i * 3]     = r * Math.sin(phi) * Math.cos(theta);
+                    positions[i * 3 + 1] = r * Math.sin(phi) * Math.sin(theta);
+                    positions[i * 3 + 2] = r * Math.cos(phi);
+                }
+
+                const starGeo = new THREE.BufferGeometry();
+                starGeo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+
+                const starMat = new THREE.PointsMaterial({
+                    color: 0xffffff,
+                    size: 0.5,
+                    sizeAttenuation: true,
+                    transparent: true,
+                    opacity: 0.85,
+                });
+
+                const stars = new THREE.Points(starGeo, starMat);
+                stars.name = "starField";
+                sceneGraph.add(stars);
+            },
+
+            // ─── Procedural terrain ───────────────────
+            createTerrain: function (sceneGraph) {
+                const segments = 180;
+                const size     = 200;
+                const geo      = new THREE.PlaneGeometry(size, size, segments, segments);
+
+                // Displace vertices with multi-octave noise to simulate icy drifts
+                const pos = geo.attributes.position;
+                for (let i = 0; i < pos.count; i++) {
+                    const x = pos.getX(i);
+                    const z = pos.getY(i); // PlaneGeometry uses Y before rotation
+
+                    // Multi-octave displacement
+                    let h = 0;
+                    h += scene.noise(x * 0.04,  z * 0.04)  * 3.5;   // large hills
+                    h += scene.noise(x * 0.12,  z * 0.12)  * 1.2;   // medium ridges
+                    h += scene.noise(x * 0.35,  z * 0.35)  * 0.4;   // fine detail
+                    h += scene.noise(x * 0.9,   z * 0.9)   * 0.12;  // micro-texture
+
+                    pos.setZ(i, h);
+                }
+                geo.computeVertexNormals();
+
+                // Icy material: pale blue-white, slightly reflective
+                const mat = new THREE.MeshStandardMaterial({
+                    color:     0xc8e8ff,
+                    roughness: 0.55,
+                    metalness: 0.15,
+                    // Vertex color tinting to add variation
+                    vertexColors: false,
+                });
+
+                const terrain = new THREE.Mesh(geo, mat);
+                terrain.rotation.x = -Math.PI / 2;
+                terrain.receiveShadow = true;
+                terrain.name = "terrain";
+                sceneGraph.add(terrain);
+
+                // Thin reflective ice overlay (slightly transparent, more metallic)
+                const iceMat = new THREE.MeshStandardMaterial({
+                    color:       0x88ccff,
+                    roughness:   0.1,
+                    metalness:   0.6,
+                    transparent: true,
+                    opacity:     0.18,
+                });
+                const iceOverlay = new THREE.Mesh(geo.clone(), iceMat);
+                iceOverlay.rotation.x = -Math.PI / 2;
+                iceOverlay.position.y  = 0.02;
+                iceOverlay.name = "iceOverlay";
+                sceneGraph.add(iceOverlay);
+            },
+
+            // ─── Ice spires ───────────────────────────
+            createIceSpires: function (sceneGraph) {
+                const spireGroup = new THREE.Group();
+                spireGroup.name  = "iceSpires";
+
+                const spireMat = new THREE.MeshStandardMaterial({
+                    color:       0x9be8ff,
+                    roughness:   0.08,
+                    metalness:   0.3,
+                    transparent: true,
+                    opacity:     0.82,
+                });
+
+                // Place clusters of spires across the terrain
+                const clusters = [
+                    { cx: -20, cz: -15, count: 7 },
+                    { cx:  18, cz: -22, count: 5 },
+                    { cx: -8,  cz:  20, count: 9 },
+                    { cx:  30, cz:  10, count: 4 },
+                    { cx: -35, cz:   5, count: 6 },
+                    { cx:   5, cz: -35, count: 5 },
+                ];
+
+                clusters.forEach(cluster => {
+                    for (let i = 0; i < cluster.count; i++) {
+                        const height    = 2 + Math.random() * 8;
+                        const baseR     = 0.12 + Math.random() * 0.35;
+                        const segments  = 5 + Math.floor(Math.random() * 3);
+
+                        const geo  = new THREE.ConeGeometry(baseR, height, segments);
+                        const mesh = new THREE.Mesh(geo, spireMat);
+
+                        // Spread within cluster
+                        const ox = (Math.random() - 0.5) * 8;
+                        const oz = (Math.random() - 0.5) * 8;
+
+                        // Approximate terrain height at position (simple noise sample)
+                        const tx = cluster.cx + ox;
+                        const tz = cluster.cz + oz;
+                        const th = scene.noise(tx * 0.04, tz * 0.04) * 3.5
+                                 + scene.noise(tx * 0.12, tz * 0.12) * 1.2;
+
+                        mesh.position.set(tx, th + height / 2, tz);
+                        mesh.rotation.y = Math.random() * Math.PI * 2;
+                        mesh.rotation.z = (Math.random() - 0.5) * 0.15; // slight tilt
+                        mesh.castShadow    = true;
+                        mesh.receiveShadow = true;
+
+                        spireGroup.add(mesh);
+                    }
+                });
+
+                sceneGraph.add(spireGroup);
+            },
+
+            // ─── Distant planet disc in the sky ───────
+            createPlanetDisc: function (sceneGraph) {
+                // Large glowing disc suggesting a nearby gas giant or alien sun
+                const geo = new THREE.CircleGeometry(12, 64);
+                const mat = new THREE.MeshBasicMaterial({
+                    color:       0x1a3a6e,
+                    transparent: true,
+                    opacity:     0.55,
+                    side:        THREE.DoubleSide,
+                });
+                const planet = new THREE.Mesh(geo, mat);
+                planet.position.set(-80, 60, -150);
+                planet.name = "planet";
+                sceneGraph.add(planet);
+
+                // Glow halo around the planet
+                const haloGeo = new THREE.CircleGeometry(16, 64);
+                const haloMat = new THREE.MeshBasicMaterial({
+                    color:       0x0033aa,
+                    transparent: true,
+                    opacity:     0.18,
+                    side:        THREE.DoubleSide,
+                });
+                const halo = new THREE.Mesh(haloGeo, haloMat);
+                halo.position.set(-80, 60, -150.5);
+                halo.name = "planetHalo";
+                sceneGraph.add(halo);
+            },
+
+            // ─── Simple value noise (no external lib) ─
+            // Smooth noise via interpolated pseudo-random grid
+            noise: function (x, z) {
+                const ix = Math.floor(x);
+                const iz = Math.floor(z);
+                const fx = x - ix;
+                const fz = z - iz;
+                const ux = fx * fx * (3 - 2 * fx);
+                const uz = fz * fz * (3 - 2 * fz);
+
+                const r = (a, b) => {
+                    // Deterministic pseudo-random from grid coords
+                    const n = Math.sin(a * 127.1 + b * 311.7) * 43758.5453123;
+                    return n - Math.floor(n);
+                };
+
+                return (
+                    r(ix,     iz)     * (1 - ux) * (1 - uz) +
+                    r(ix + 1, iz)     * ux       * (1 - uz) +
+                    r(ix,     iz + 1) * (1 - ux) * uz       +
+                    r(ix + 1, iz + 1) * ux       * uz
+                ) * 2 - 1;
+            },
+        };
+
+        // ─────────────────────────────────────────────
+        // ANIMATION
+        // ─────────────────────────────────────────────
+
+        var delta = 0.1;
+        var keyD = false, keyA = false, keyS = false, keyW = false;
+
+        function computeFrame(time) {
+
+            const t = time * 0.001; // seconds
+
+            // Slowly rotate star field for parallax feel
+            const stars = sceneElements.sceneGraph.getObjectByName("starField");
+            if (stars) stars.rotation.y = t * 0.005;
+
+            // Subtle sun pulsing (intensity variation)
+            const sun = sceneElements.sceneGraph.getObjectByName("sun");
+            if (sun) {
+                sun.intensity = 2.5 + Math.sin(t * 0.3) * 0.15;
+            }
+
+            // Keyboard camera movement (WASD)
+            const speed = 0.08;
+            const cam   = sceneElements.camera;
+            const dir   = new THREE.Vector3();
+            cam.getWorldDirection(dir);
+            dir.y = 0;
+            dir.normalize();
+
+            const right = new THREE.Vector3();
+            right.crossVectors(dir, new THREE.Vector3(0, 1, 0)).normalize();
+
+            if (keyW) cam.position.addScaledVector(dir,   speed);
+            if (keyS) cam.position.addScaledVector(dir,  -speed);
+            if (keyD) cam.position.addScaledVector(right,  speed);
+            if (keyA) cam.position.addScaledVector(right, -speed);
+
+            // Rendering
+            helper.render(sceneElements);
+
+            // Next frame
+            requestAnimationFrame(computeFrame);
+        }
+
+        // ─────────────────────────────────────────────
+        // INIT
+        // ─────────────────────────────────────────────
+        function init() {
+            helper.initEmptyScene(sceneElements);
+            scene.load3DObjects(sceneElements.sceneGraph);
+            requestAnimationFrame(computeFrame);
+        }
+
+        // ─────────────────────────────────────────────
+        // EVENT HANDLING
+        // ─────────────────────────────────────────────
+        window.addEventListener('resize', resizeWindow);
+        document.addEventListener('keydown', onDocumentKeyDown, false);
+        document.addEventListener('keyup',   onDocumentKeyUp,   false);
+
+        function resizeWindow() {
+            const width  = window.innerWidth;
+            const height = window.innerHeight;
+            sceneElements.camera.aspect = width / height;
+            sceneElements.camera.updateProjectionMatrix();
+            sceneElements.renderer.setSize(width, height);
+        }
+
+        function onDocumentKeyDown(event) {
+            switch (event.keyCode) {
+                case 68: keyD = true; break;  // d
+                case 83: keyS = true; break;  // s
+                case 65: keyA = true; break;  // a
+                case 87: keyW = true; break;  // w
+            }
+        }
+
+        function onDocumentKeyUp(event) {
+            switch (event.keyCode) {
+                case 68: keyD = false; break;
+                case 83: keyS = false; break;
+                case 65: keyA = false; break;
+                case 87: keyW = false; break;
+            }
+        }
+
+        // ─────────────────────────────────────────────
+        // START
+        // ─────────────────────────────────────────────
+        init();
+
+    </script>
+</head>
+
+<body>
+    <div id="Tag3DScene"></div>
+
+    <!-- HUD overlay -->
+    <div id="hud">
+        <div id="hud-title">❄ FROZEN FRONTIER</div>
+        <div id="hud-controls">WASD · Navigate &nbsp;|&nbsp; Mouse · Orbit &nbsp;|&nbsp; Scroll · Zoom</div>
+    </div>
+</body>
+</html>

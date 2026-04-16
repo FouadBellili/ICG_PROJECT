@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Intermediate Delivery – Frozen Frontier</title>
+<style>
+  @page { size: A4; margin: 18mm 18mm 18mm 18mm; }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: 'Segoe UI', Arial, sans-serif;
+    font-size: 10.5pt;
+    color: #111;
+    background: #fff;
+    line-height: 1.45;
+  }
+
+  /* ── Header ── */
+  .header {
+    border-bottom: 2.5px solid #1a3a8f;
+    padding-bottom: 8px;
+    margin-bottom: 12px;
+  }
+  .course {
+    font-size: 8.5pt;
+    color: #555;
+    letter-spacing: 0.04em;
+    margin-bottom: 3px;
+  }
+  .title {
+    font-size: 17pt;
+    font-weight: 700;
+    color: #1a3a8f;
+    letter-spacing: 0.02em;
+  }
+  .author {
+    font-size: 10pt;
+    color: #333;
+    margin-top: 3px;
+  }
+
+  /* ── URL row ── */
+  .url-row {
+    display: flex;
+    gap: 18px;
+    margin-bottom: 12px;
+    font-size: 8.5pt;
+  }
+  .url-item { display: flex; flex-direction: column; gap: 1px; }
+  .url-label { font-weight: 600; color: #555; text-transform: uppercase; letter-spacing: 0.05em; font-size: 7.5pt; }
+  .url-link { color: #1a3a8f; text-decoration: none; word-break: break-all; }
+
+  /* ── Two-column body ── */
+  .body-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 14px;
+    margin-bottom: 12px;
+  }
+
+  /* ── Image placeholder ── */
+  .image-box {
+    width: 100%;
+    aspect-ratio: 16/9;
+    border: 1.5px dashed #aac;
+    border-radius: 4px;
+    background: #f0f4ff;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #7090bb;
+    font-size: 8pt;
+    font-style: italic;
+    text-align: center;
+    padding: 8px;
+  }
+
+  /* ── Section cards ── */
+  .section { margin-bottom: 11px; }
+  .section-title {
+    font-size: 8pt;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: #1a3a8f;
+    border-bottom: 1px solid #c8d8f8;
+    padding-bottom: 2px;
+    margin-bottom: 5px;
+  }
+
+  ul { padding-left: 13px; }
+  li { margin-bottom: 2.5px; font-size: 9.5pt; }
+  li span.done  { color: #1a7a3a; font-weight: 600; }
+  li span.todo  { color: #b04000; font-weight: 600; }
+
+  p { font-size: 9.5pt; }
+
+  /* ── Bottom strip ── */
+  .footer {
+    border-top: 1px solid #dde;
+    padding-top: 5px;
+    font-size: 7.5pt;
+    color: #888;
+    display: flex;
+    justify-content: space-between;
+  }
+
+  /* ── Print: hide placeholder label when image pasted ── */
+  @media print {
+    body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  }
+</style>
+</head>
+<body>
+
+<!-- HEADER -->
+<div class="header">
+  <div class="course">Introduction to Computer Graphics – 2025/2026 &nbsp;·&nbsp; Intermediate Delivery – April 2026</div>
+  <div class="title">Frozen Frontier: An Alien Ice World Explorer</div>
+  <div class="author">Fouad Bellili</div>
+</div>
+
+<!-- URLs -->
+<div class="url-row">
+  <div class="url-item">
+    <span class="url-label">GitHub Repository</span>
+    <a class="url-link" href="https://github.com/FouadBellili/ICG_PROJECT">github.com/FouadBellili/ICG_PROJECT</a>
+  </div>
+  <div class="url-item">
+    <span class="url-label">Live Demo</span>
+    <a class="url-link" href="https://fouadbellili.github.io/ICG_PROJECT/">fouadbellili.github.io/ICG_PROJECT</a>
+  </div>
+</div>
+
+<!-- BODY: image + goals side by side -->
+<div class="body-grid">
+
+  <!-- Left: screenshot -->
+  <div>
+    <div class="section-title">Illustrative Image</div>
+    <img src="screenshot.png" style="width:100%;border-radius:4px;display:block;" />
+  </div>
+
+  <!-- Right: goals -->
+  <div>
+    <div class="section">
+      <div class="section-title">Goals</div>
+      <ul>
+        <li>Real-time first-person exploration of a fictional alien ice planet using Three.js</li>
+        <li>Procedurally generated icy terrain with heightmap displacement and multi-octave noise</li>
+        <li>Alien ice spires, rock formations, and glowing artefacts populating the scene</li>
+        <li>Physically-based lighting: cold directional sun with shadows, ambient, fill and point lights</li>
+        <li>PBR texture maps (color, normal, roughness) for terrain and objects</li>
+        <li>Particle system simulating drifting snow and ice crystals</li>
+        <li>Deep-space skybox with procedural star field</li>
+        <li>WASD + mouse-look first-person camera control</li>
+        <li>Proximity HUD displaying lore snippets near points of interest</li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+<!-- DONE / TO DO side by side -->
+<div class="body-grid">
+
+  <div class="section">
+    <div class="section-title">What Is Already Done</div>
+    <ul>
+      <li><span class="done">✔</span> Procedural icy terrain — multi-octave value noise displacement (180×180 segments)</li>
+      <li><span class="done">✔</span> Reflective ice overlay (transparent, high-metalness layer)</li>
+      <li><span class="done">✔</span> Procedural star field skybox (6 000 points, spherically distributed)</li>
+      <li><span class="done">✔</span> Ice spires — 6 clusters of ConeGeometry meshes, terrain-height-aware placement, cast shadows</li>
+      <li><span class="done">✔</span> Distant alien planet disc with glow halo</li>
+      <li><span class="done">✔</span> Full lighting setup: cold ambient, directional sun (PCF soft shadows, 4096² map), blue fill light</li>
+      <li><span class="done">✔</span> Exponential atmospheric fog (ice-blue)</li>
+      <li><span class="done">✔</span> WASD camera movement + OrbitControls (mouse orbit &amp; zoom)</li>
+      <li><span class="done">✔</span> HUD overlay (title + control hints)</li>
+      <li><span class="done">✔</span> Animation loop: star field rotation, sun intensity pulsing</li>
+      <li><span class="done">✔</span> ACES filmic tone mapping, shadow maps enabled</li>
+      <li><span class="done">✔</span> Responsive resize handler</li>
+    </ul>
+  </div>
+
+  <div class="section">
+    <div class="section-title">What Remains To Be Done</div>
+    <ul>
+      <li><span class="todo">○</span> Replace OrbitControls with <strong>PointerLockControls</strong> for true first-person mouse-look</li>
+      <li><span class="todo">○</span> Apply <strong>PBR texture maps</strong> (color, normal, roughness) to terrain and spires</li>
+      <li><span class="todo">○</span> Add <strong>rock formations</strong> (IcosahedronGeometry / imported mesh) scattered across terrain</li>
+      <li><span class="todo">○</span> Implement <strong>glowing alien artefacts</strong> with PointLights and animated emissive pulsing</li>
+      <li><span class="todo">○</span> Build <strong>snow particle system</strong> (BufferGeometry points, animated drift &amp; fall)</li>
+      <li><span class="todo">○</span> <strong>Proximity detection</strong> — trigger HUD lore snippets when player approaches artefacts</li>
+      <li><span class="todo">○</span> Deploy to <strong>GitHub Pages</strong> for live URL</li>
+    </ul>
+  </div>
+
+</div>
+
+<!-- FOOTER -->
+<div class="footer">
+  <span>AI tools used: Anthropic. (2026). Claude [Large language model]. https://claude.ai</span>
+  <span>Three.js r170 &nbsp;·&nbsp; April 2026</span>
+</div>
+
+</body>
+</html>

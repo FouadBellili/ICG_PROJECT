@@ -1,0 +1,53 @@
+/* ─────────────────────────────────────────────────────
+   Frozen Frontier – stylesheet
+   ───────────────────────────────────────────────────── */
+
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    background-color: #010510;
+    overflow: hidden;
+    font-family: 'Courier New', monospace;
+}
+
+#Tag3DScene {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100vw;
+    height: 100vh;
+}
+
+/* ── HUD ───────────────────────────────────────────── */
+#hud {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    padding: 18px 28px;
+    pointer-events: none;
+    z-index: 10;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+#hud-title {
+    font-size: 1.25rem;
+    font-weight: bold;
+    letter-spacing: 0.25em;
+    color: #9be8ff;
+    text-shadow:
+        0 0 8px #4af,
+        0 0 24px #08f;
+}
+
+#hud-controls {
+    font-size: 0.72rem;
+    letter-spacing: 0.12em;
+    color: rgba(150, 210, 255, 0.55);
+}
