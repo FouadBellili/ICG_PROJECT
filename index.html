@@ -27,110 +27,115 @@
         import { PointerLockControls } from "three/addons/controls/PointerLockControls.js";
 
         // ─────────────────────────────────────────────
-        // Scene elements
+        // CONFIG
         // ─────────────────────────────────────────────
-        const sceneElements = {
-            sceneGraph: null,
-            camera:     null,
-            controls:   null,
-            renderer:   null,
-        };
-
-        // Artefact data for proximity detection (populated in createArtefacts)
-        const artefacts = [];
+        const CHUNK_SIZE = 50;   // world units per chunk
+        const CHUNK_SEGS = 40;   // vertex subdivisions per chunk side
+        const VIEW_RANGE = 3;    // chunks loaded in every direction (7×7 grid)
+        const EYE_HEIGHT = 2.0;  // camera height above terrain
+        const MOVE_SPEED = 0.13;
 
         // ─────────────────────────────────────────────
-        // NOISE  (simple value noise, no external lib)
+        // STATE
+        // ─────────────────────────────────────────────
+        const sceneElements = { sceneGraph: null, camera: null, controls: null, renderer: null };
+        const chunkMap      = new Map();   // "cx,cz" → THREE.Group
+        const artefacts     = [];
+        let   terrainMat, overlayMat;      // shared across all chunks
+        let   keyW=false, keyS=false, keyA=false, keyD=false;
+        let   currentLore = -1;
+
+        // ─────────────────────────────────────────────
+        // NOISE  (value noise, no external lib)
         // ─────────────────────────────────────────────
         function noise(x, z) {
             const ix = Math.floor(x), iz = Math.floor(z);
-            const fx = x - ix,        fz = z - iz;
-            const ux = fx * fx * (3 - 2 * fx);
-            const uz = fz * fz * (3 - 2 * fz);
-            const r  = (a, b) => { const n = Math.sin(a * 127.1 + b * 311.7) * 43758.5453123; return n - Math.floor(n); };
-            return (r(ix,iz)*(1-ux)*(1-uz) + r(ix+1,iz)*ux*(1-uz) + r(ix,iz+1)*(1-ux)*uz + r(ix+1,iz+1)*ux*uz) * 2 - 1;
+            const fx = x - ix, fz = z - iz;
+            const ux = fx*fx*(3-2*fx), uz = fz*fz*(3-2*fz);
+            const r = (a, b) => { const n = Math.sin(a*127.1 + b*311.7)*43758.5453123; return n - Math.floor(n); };
+            return (r(ix,iz)*(1-ux)*(1-uz) + r(ix+1,iz)*ux*(1-uz) + r(ix,iz+1)*(1-ux)*uz + r(ix+1,iz+1)*ux*uz)*2 - 1;
         }
 
-        function terrainHeight(x, z) {
-            return noise(x*0.04,z*0.04)*3.5 + noise(x*0.12,z*0.12)*1.2
-                 + noise(x*0.35,z*0.35)*0.4  + noise(x*0.9, z*0.9) *0.12;
+        // worldHeight: given true world X and world Z, returns terrain elevation.
+        // Used for both mesh vertex displacement and camera clamping.
+        function worldHeight(wx, wz) {
+            return noise(wx*0.04, wz*0.04)*3.5
+                 + noise(wx*0.12, wz*0.12)*1.2
+                 + noise(wx*0.35, wz*0.35)*0.4
+                 + noise(wx*0.9,  wz*0.9 )*0.12;
         }
 
         // ─────────────────────────────────────────────
         // CANVAS TEXTURE GENERATORS  (PBR maps)
         // ─────────────────────────────────────────────
         function makeRoughnessTexture() {
-            const S = 512, canvas = document.createElement('canvas');
-            canvas.width = canvas.height = S;
-            const ctx = canvas.getContext('2d');
-            const img = ctx.createImageData(S, S);
+            const S = 512;
+            const cv = document.createElement('canvas'); cv.width = cv.height = S;
+            const ctx = cv.getContext('2d'), img = ctx.createImageData(S, S);
             for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
-                const nx = x / S * 8, ny = y / S * 8;
-                let v = noise(nx,ny)*0.5 + noise(nx*2.1,ny*2.1)*0.25 + noise(nx*4.3,ny*4.3)*0.125;
-                const b = Math.floor((0.3 + (v*0.5+0.5)*0.6) * 255);
+                const nx = x/S*8, ny = y/S*8;
+                const v = noise(nx,ny)*0.5 + noise(nx*2.1,ny*2.1)*0.25 + noise(nx*4.3,ny*4.3)*0.125;
+                const b = Math.floor((0.3 + (v*0.5+0.5)*0.6)*255);
                 const i = (y*S+x)*4; img.data[i]=b; img.data[i+1]=b; img.data[i+2]=b; img.data[i+3]=255;
             }
             ctx.putImageData(img, 0, 0);
-            const t = new THREE.CanvasTexture(canvas);
+            const t = new THREE.CanvasTexture(cv);
             t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(6,6); return t;
         }
 
         function makeNormalTexture() {
-            const S = 512, canvas = document.createElement('canvas');
-            canvas.width = canvas.height = S;
-            const ctx = canvas.getContext('2d');
-            const img = ctx.createImageData(S, S);
+            const S = 512;
+            const cv = document.createElement('canvas'); cv.width = cv.height = S;
+            const ctx = cv.getContext('2d'), img = ctx.createImageData(S, S);
             for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
                 const nx = x/S*12, ny = y/S*12;
-                const h  = noise(nx,ny)*0.5   + noise(nx*3,   ny*3)   *0.25;
-                const hR = noise(nx+0.1,ny)*0.5 + noise((nx+0.1)*3,ny*3)*0.25;
-                const hU = noise(nx,ny+0.1)*0.5 + noise(nx*3,(ny+0.1)*3)*0.25;
-                const dX = (hR-h)*2, dY = (hU-h)*2;
+                const h  = noise(nx,   ny  )*0.5 + noise(nx*3,       ny*3  )*0.25;
+                const hR = noise(nx+.1, ny  )*0.5 + noise((nx+.1)*3,  ny*3  )*0.25;
+                const hU = noise(nx,   ny+.1)*0.5 + noise(nx*3,      (ny+.1)*3)*0.25;
                 const i = (y*S+x)*4;
-                img.data[i]   = Math.floor((dX*0.5+0.5)*255);
-                img.data[i+1] = Math.floor((dY*0.5+0.5)*255);
+                img.data[i]   = Math.floor(((hR-h)*2*0.5+0.5)*255);
+                img.data[i+1] = Math.floor(((hU-h)*2*0.5+0.5)*255);
                 img.data[i+2] = 255; img.data[i+3] = 255;
             }
             ctx.putImageData(img, 0, 0);
-            const t = new THREE.CanvasTexture(canvas);
+            const t = new THREE.CanvasTexture(cv);
             t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(6,6); return t;
         }
 
         // ─────────────────────────────────────────────
-        // SCENE INITIALISATION
+        // SCENE INIT
         // ─────────────────────────────────────────────
         function initScene() {
-            // Scene + fog
-            sceneElements.sceneGraph = new THREE.Scene();
-            sceneElements.sceneGraph.fog = new THREE.FogExp2(0x0a1a2e, 0.018);
+            const sg = new THREE.Scene();
+            sg.fog = new THREE.FogExp2(0x0a1a2e, 0.018);
+            sceneElements.sceneGraph = sg;
 
-            // Camera
+            // Camera starts at world (0, ?, 0) above the terrain
             const W = window.innerWidth, H = window.innerHeight;
             const camera = new THREE.PerspectiveCamera(75, W/H, 0.1, 500);
+            camera.position.set(0, worldHeight(0, 0) + EYE_HEIGHT, 0);
             sceneElements.camera = camera;
-            camera.position.set(0, 5, 14);
 
             // Lights
-            sceneElements.sceneGraph.add(new THREE.AmbientLight(0x0d1b3e, 0.8));
+            sg.add(new THREE.AmbientLight(0x0d1b3e, 0.8));
 
             const sun = new THREE.DirectionalLight(0xaad4ff, 2.5);
-            sun.position.set(-60, 40, -30);
             sun.castShadow = true;
-            sun.shadow.mapSize.width = sun.shadow.mapSize.height = 4096;
-            sun.shadow.camera.near = 0.5; sun.shadow.camera.far = 200;
+            sun.shadow.mapSize.width = sun.shadow.mapSize.height = 2048;
+            sun.shadow.camera.near = 0.5; sun.shadow.camera.far = 150;
             sun.shadow.camera.left = -60; sun.shadow.camera.right = 60;
             sun.shadow.camera.top  =  60; sun.shadow.camera.bottom = -60;
             sun.shadow.bias = -0.001;
             sun.name = "sun";
-            sceneElements.sceneGraph.add(sun);
+            sg.add(sun);
+            sg.add(sun.target); // must be in scene for target.updateMatrixWorld() to work
 
             const fill = new THREE.DirectionalLight(0x2244aa, 0.4);
             fill.position.set(40, 10, 20);
-            sceneElements.sceneGraph.add(fill);
+            sg.add(fill);
 
             // Renderer
             const renderer = new THREE.WebGLRenderer({ antialias: true });
-            sceneElements.renderer = renderer;
             renderer.setPixelRatio(window.devicePixelRatio);
             renderer.setClearColor(0x010510, 1.0);
             renderer.setSize(W, H);
@@ -138,6 +143,7 @@
             renderer.shadowMap.type    = THREE.PCFSoftShadowMap;
             renderer.toneMapping       = THREE.ACESFilmicToneMapping;
             renderer.toneMappingExposure = 1.2;
+            sceneElements.renderer = renderer;
             document.querySelector("#Tag3DScene").appendChild(renderer.domElement);
 
             // PointerLockControls
@@ -146,142 +152,157 @@
 
             const overlay   = document.getElementById('overlay');
             const hud       = document.getElementById('hud');
+            const crosshair = document.getElementById('crosshair');
             const lorePanel = document.getElementById('lore-panel');
 
             overlay.addEventListener('click', () => controls.lock());
-
-            const crosshair = document.getElementById('crosshair');
-
-            controls.addEventListener('lock', () => {
-                overlay.style.display    = 'none';
-                hud.style.display        = 'flex';
-                crosshair.style.display  = 'block';
-            });
-            controls.addEventListener('unlock', () => {
-                overlay.style.display    = 'flex';
-                hud.style.display        = 'none';
-                crosshair.style.display  = 'none';
-                lorePanel.style.opacity  = '0';
-            });
+            controls.addEventListener('lock',   () => { overlay.style.display='none'; hud.style.display='flex'; crosshair.style.display='block'; });
+            controls.addEventListener('unlock', () => { overlay.style.display='flex'; hud.style.display='none'; crosshair.style.display='none'; lorePanel.style.opacity='0'; });
         }
 
         // ─────────────────────────────────────────────
-        // SCENE OBJECTS
+        // INFINITE CHUNK TERRAIN
         // ─────────────────────────────────────────────
-        function buildScene(sceneGraph) {
-            createStarField(sceneGraph);
-            createTerrain(sceneGraph);
-            createIceSpires(sceneGraph);
-            createRockFormations(sceneGraph);
-            createArtefacts(sceneGraph);
-            createSnow(sceneGraph);
-            createPlanetDisc(sceneGraph);
-        }
-
-        // ── Star field ──────────────────────────────
-        function createStarField(sg) {
-            const N = 6000, pos = new Float32Array(N*3);
-            for (let i = 0; i < N; i++) {
-                const th = Math.random()*Math.PI*2, ph = Math.acos(2*Math.random()-1), r = 300+Math.random()*100;
-                pos[i*3]   = r*Math.sin(ph)*Math.cos(th);
-                pos[i*3+1] = r*Math.sin(ph)*Math.sin(th);
-                pos[i*3+2] = r*Math.cos(ph);
-            }
-            const geo = new THREE.BufferGeometry();
-            geo.setAttribute('position', new THREE.BufferAttribute(pos,3));
-            const stars = new THREE.Points(geo, new THREE.PointsMaterial({color:0xffffff,size:0.5,sizeAttenuation:true,transparent:true,opacity:0.85}));
-            stars.name = "starField";
-            sg.add(stars);
-        }
-
-        // ── Terrain (PBR: roughnessMap + normalMap) ─
-        function createTerrain(sg) {
-            const geo = new THREE.PlaneGeometry(200, 200, 180, 180);
-            const p = geo.attributes.position;
-            for (let i = 0; i < p.count; i++) p.setZ(i, terrainHeight(p.getX(i), p.getY(i)));
-            geo.computeVertexNormals();
-
-            const roughTex   = makeRoughnessTexture();
-            const normalTex  = makeNormalTexture();
-
-            const terrain = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({
+        function initTerrainMaterials() {
+            const roughTex  = makeRoughnessTexture();
+            const normalTex = makeNormalTexture();
+            terrainMat = new THREE.MeshStandardMaterial({
                 color: 0xc8e8ff, roughness: 0.6, metalness: 0.15,
                 roughnessMap: roughTex, normalMap: normalTex,
                 normalScale: new THREE.Vector2(0.4, 0.4),
-            }));
-            terrain.rotation.x = -Math.PI/2;
-            terrain.receiveShadow = true;
-            terrain.name = "terrain";
-            sg.add(terrain);
-
-            // Reflective ice overlay
-            const overlay = new THREE.Mesh(geo.clone(), new THREE.MeshStandardMaterial({
-                color:0x88ccff, roughness:0.08, metalness:0.6, transparent:true, opacity:0.18,
-            }));
-            overlay.rotation.x = -Math.PI/2;
-            overlay.position.y = 0.02;
-            sg.add(overlay);
+            });
+            overlayMat = new THREE.MeshStandardMaterial({
+                color: 0x88ccff, roughness: 0.08, metalness: 0.6,
+                transparent: true, opacity: 0.18,
+            });
         }
 
-        // ── Ice spires (PBR textures applied) ───────
+        // Build one terrain chunk at grid position (cx, cz).
+        //
+        // PlaneGeometry rotated -π/2 around X maps local (lx, ly) to:
+        //   world.x = lx + cx*CHUNK_SIZE
+        //   world.z = -ly + cz*CHUNK_SIZE
+        // So height must be sampled at those exact world coords for
+        // camera clamping and vertex displacement to stay consistent.
+        function buildChunk(cx, cz) {
+            const geo = new THREE.PlaneGeometry(CHUNK_SIZE, CHUNK_SIZE, CHUNK_SEGS, CHUNK_SEGS);
+            const p = geo.attributes.position;
+            for (let i = 0; i < p.count; i++) {
+                const wx = p.getX(i) + cx * CHUNK_SIZE;
+                const wz = -p.getY(i) + cz * CHUNK_SIZE;
+                p.setZ(i, worldHeight(wx, wz));
+            }
+            geo.computeVertexNormals();
+
+            const mesh = new THREE.Mesh(geo, terrainMat);
+            mesh.rotation.x = -Math.PI / 2;
+            mesh.position.set(cx * CHUNK_SIZE, 0, cz * CHUNK_SIZE);
+            mesh.receiveShadow = true;
+
+            const ice = new THREE.Mesh(geo.clone(), overlayMat);
+            ice.rotation.x = -Math.PI / 2;
+            ice.position.set(cx * CHUNK_SIZE, 0.02, cz * CHUNK_SIZE);
+
+            const grp = new THREE.Group();
+            grp.add(mesh);
+            grp.add(ice);
+            return grp;
+        }
+
+        // Called every frame: loads chunks around the player, unloads distant ones.
+        function updateChunks() {
+            const sg  = sceneElements.sceneGraph;
+            const cam = sceneElements.camera;
+            const pcx = Math.round(cam.position.x / CHUNK_SIZE);
+            const pcz = Math.round(cam.position.z / CHUNK_SIZE);
+
+            const needed = new Set();
+            for (let dx = -VIEW_RANGE; dx <= VIEW_RANGE; dx++) {
+                for (let dz = -VIEW_RANGE; dz <= VIEW_RANGE; dz++) {
+                    const cx = pcx + dx, cz = pcz + dz;
+                    const key = `${cx},${cz}`;
+                    needed.add(key);
+                    if (!chunkMap.has(key)) {
+                        const chunk = buildChunk(cx, cz);
+                        sg.add(chunk);
+                        chunkMap.set(key, chunk);
+                    }
+                }
+            }
+            for (const [key, chunk] of chunkMap) {
+                if (!needed.has(key)) {
+                    sg.remove(chunk);
+                    chunk.traverse(c => { if (c.geometry) c.geometry.dispose(); });
+                    chunkMap.delete(key);
+                }
+            }
+        }
+
+        // ─────────────────────────────────────────────
+        // FIXED-POSITION SCENE OBJECTS (near spawn)
+        // ─────────────────────────────────────────────
+        function buildScene(sg) {
+            createStarField(sg);
+            createIceSpires(sg);
+            createRockFormations(sg);
+            createArtefacts(sg);
+            createSnow(sg);
+            createPlanetDisc(sg);
+        }
+
+        function createStarField(sg) {
+            const N = 6000, pos = new Float32Array(N * 3);
+            for (let i = 0; i < N; i++) {
+                const th = Math.random()*Math.PI*2, ph = Math.acos(2*Math.random()-1), r = 300+Math.random()*100;
+                pos[i*3] = r*Math.sin(ph)*Math.cos(th); pos[i*3+1] = r*Math.sin(ph)*Math.sin(th); pos[i*3+2] = r*Math.cos(ph);
+            }
+            const geo = new THREE.BufferGeometry();
+            geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+            const stars = new THREE.Points(geo, new THREE.PointsMaterial({ color:0xffffff, size:0.5, sizeAttenuation:true, transparent:true, opacity:0.85 }));
+            stars.name = "starField"; sg.add(stars);
+        }
+
         function createIceSpires(sg) {
-            const roughTex  = makeRoughnessTexture();
-            const normalTex = makeNormalTexture();
             const mat = new THREE.MeshStandardMaterial({
                 color:0x9be8ff, roughness:0.06, metalness:0.35, transparent:true, opacity:0.82,
-                roughnessMap:roughTex, normalMap:normalTex, normalScale:new THREE.Vector2(0.2,0.2),
+                roughnessMap: makeRoughnessTexture(), normalMap: makeNormalTexture(),
+                normalScale: new THREE.Vector2(0.2, 0.2),
             });
-            const clusters = [
-                {cx:-20,cz:-15,n:7},{cx:18,cz:-22,n:5},{cx:-8,cz:20,n:9},
-                {cx:30,cz:10,n:4},{cx:-35,cz:5,n:6},{cx:5,cz:-35,n:5},
-            ];
+            const clusters = [{cx:-20,cz:-15,n:7},{cx:18,cz:-22,n:5},{cx:-8,cz:20,n:9},{cx:30,cz:10,n:4},{cx:-35,cz:5,n:6},{cx:5,cz:-35,n:5}];
             const grp = new THREE.Group(); grp.name = "iceSpires";
             clusters.forEach(c => {
                 for (let i = 0; i < c.n; i++) {
-                    const h = 2+Math.random()*8, r = 0.12+Math.random()*0.35, seg = 5+Math.floor(Math.random()*3);
-                    const mesh = new THREE.Mesh(new THREE.ConeGeometry(r,h,seg), mat);
+                    const h = 2+Math.random()*8, r = 0.12+Math.random()*0.35;
+                    const mesh = new THREE.Mesh(new THREE.ConeGeometry(r, h, 5+Math.floor(Math.random()*3)), mat);
                     const ox = (Math.random()-0.5)*8, oz = (Math.random()-0.5)*8;
                     const tx = c.cx+ox, tz = c.cz+oz;
-                    mesh.position.set(tx, terrainHeight(tx,tz)+h/2, tz);
-                    mesh.rotation.y = Math.random()*Math.PI*2;
-                    mesh.rotation.z = (Math.random()-0.5)*0.15;
-                    mesh.castShadow = mesh.receiveShadow = true;
-                    grp.add(mesh);
+                    mesh.position.set(tx, worldHeight(tx, tz)+h/2, tz);
+                    mesh.rotation.y = Math.random()*Math.PI*2; mesh.rotation.z = (Math.random()-0.5)*0.15;
+                    mesh.castShadow = mesh.receiveShadow = true; grp.add(mesh);
                 }
             });
             sg.add(grp);
         }
 
-        // ── Rock formations (IcosahedronGeometry) ───
         function createRockFormations(sg) {
-            const mat = new THREE.MeshStandardMaterial({color:0x334455, roughness:0.88, metalness:0.04});
-            const spots = [
-                [-12,-8],[22,5],[-30,18],[8,28],[-5,-28],[40,-20],[-42,-10],
-                [25,-38],[-18,35],[38,32],[12,-42],[-48,22],[6,14],[-22,-42],
-                [45,8],[-15,15],[32,-15],[-38,-28],[18,-18],[-28,28],
-            ];
+            const mat = new THREE.MeshStandardMaterial({ color:0x334455, roughness:0.88, metalness:0.04 });
+            const spots = [[-12,-8],[22,5],[-30,18],[8,28],[-5,-28],[40,-20],[-42,-10],[25,-38],[-18,35],[38,32],[12,-42],[-48,22],[6,14],[-22,-42],[45,8],[-15,15],[32,-15],[-38,-28],[18,-18],[-28,28]];
             const grp = new THREE.Group(); grp.name = "rocks";
-            spots.forEach(([rx,rz]) => {
-                const n = 2+Math.floor(Math.random()*3);
-                for (let i = 0; i < n; i++) {
-                    const detail = Math.floor(Math.random()*2);
-                    const mesh = new THREE.Mesh(new THREE.IcosahedronGeometry(0.5+Math.random()*1.5, detail), mat);
-                    const ox = (Math.random()-0.5)*4, oz = (Math.random()-0.5)*4;
-                    const px = rx+ox, pz = rz+oz;
-                    const th = terrainHeight(px,pz);
+            spots.forEach(([rx, rz]) => {
+                for (let i = 0; i < 2+Math.floor(Math.random()*3); i++) {
+                    const mesh = new THREE.Mesh(new THREE.IcosahedronGeometry(0.5+Math.random()*1.5, Math.floor(Math.random()*2)), mat);
+                    const px = rx+(Math.random()-0.5)*4, pz = rz+(Math.random()-0.5)*4;
                     mesh.scale.set(0.7+Math.random()*0.8, 0.5+Math.random()*0.7, 0.7+Math.random()*0.8);
-                    mesh.position.set(px, th+mesh.scale.y*0.3, pz);
+                    mesh.position.set(px, worldHeight(px, pz)+mesh.scale.y*0.3, pz);
                     mesh.rotation.set(Math.random()*Math.PI, Math.random()*Math.PI, Math.random()*Math.PI);
-                    mesh.castShadow = mesh.receiveShadow = true;
-                    grp.add(mesh);
+                    mesh.castShadow = mesh.receiveShadow = true; grp.add(mesh);
                 }
             });
             sg.add(grp);
         }
 
-        // ── Glowing alien artefacts ──────────────────
         function createArtefacts(sg) {
-            const lore = [
+            const loreList = [
                 "ANOMALY LOG 001 · Crystal lattice age: 4.2 billion cycles. Resonance frequency: unknown.",
                 "ANOMALY LOG 002 · Organic residue detected beneath ice layer. Life signs — indeterminate.",
                 "ANOMALY LOG 003 · Localised magnetic field distortion. Navigation systems compromised.",
@@ -290,96 +311,62 @@
             ];
             const spots  = [[10,-10],[-25,8],[15,25],[-10,-30],[35,-5]];
             const colors = [0x00ffcc, 0xff44aa, 0xaaff00, 0x4499ff, 0xff8800];
-
-            spots.forEach(([ax,az], idx) => {
-                const th     = terrainHeight(ax,az);
-                const h      = 1.2+Math.random()*1.5;
-                const color  = colors[idx];
-
-                const mat = new THREE.MeshStandardMaterial({
-                    color, emissive:color, emissiveIntensity:0.6,
-                    roughness:0.1, metalness:0.5, transparent:true, opacity:0.85,
-                });
+            spots.forEach(([ax, az], idx) => {
+                const th = worldHeight(ax, az), h = 1.2+Math.random()*1.5, color = colors[idx];
+                const mat = new THREE.MeshStandardMaterial({ color, emissive:color, emissiveIntensity:0.6, roughness:0.1, metalness:0.5, transparent:true, opacity:0.85 });
                 const crystal = new THREE.Mesh(new THREE.OctahedronGeometry(0.45+Math.random()*0.35, 0), mat);
-                crystal.scale.y = h;
-                crystal.position.set(ax, th+h*0.5+0.5, az);
-                crystal.castShadow = true;
-                crystal.name = `artefact_${idx}`;
-                sg.add(crystal);
-
+                crystal.scale.y = h; crystal.position.set(ax, th+h*0.5+0.5, az);
+                crystal.castShadow = true; crystal.name = `artefact_${idx}`; sg.add(crystal);
                 const light = new THREE.PointLight(color, 1.5, 18);
-                light.position.set(ax, th+h+1, az);
-                light.name = `artefactLight_${idx}`;
-                sg.add(light);
-
-                artefacts.push({
-                    position: new THREE.Vector3(ax, th+h*0.5, az),
-                    lore:     lore[idx],
-                    meshName: `artefact_${idx}`,
-                    lightName:`artefactLight_${idx}`,
-                });
+                light.position.set(ax, th+h+1, az); light.name = `artefactLight_${idx}`; sg.add(light);
+                artefacts.push({ position: new THREE.Vector3(ax, th+h*0.5, az), lore: loreList[idx], meshName:`artefact_${idx}`, lightName:`artefactLight_${idx}` });
             });
         }
 
-        // ── Snow particle system ─────────────────────
         function createSnow(sg) {
             const N = 4000;
-            const positions  = new Float32Array(N*3);
-            const velocities = new Float32Array(N);
-            const phases     = new Float32Array(N);
+            const positions = new Float32Array(N*3), velocities = new Float32Array(N), phases = new Float32Array(N);
             for (let i = 0; i < N; i++) {
-                positions[i*3]   = (Math.random()-0.5)*180;
-                positions[i*3+1] = Math.random()*28;
-                positions[i*3+2] = (Math.random()-0.5)*180;
-                velocities[i]    = 0.015+Math.random()*0.035;
-                phases[i]        = Math.random()*Math.PI*2;
+                positions[i*3] = (Math.random()-0.5)*100; positions[i*3+1] = Math.random()*28; positions[i*3+2] = (Math.random()-0.5)*100;
+                velocities[i]  = 0.015+Math.random()*0.035; phases[i] = Math.random()*Math.PI*2;
             }
             const geo = new THREE.BufferGeometry();
             geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-            const snow = new THREE.Points(geo, new THREE.PointsMaterial({
-                color:0xddf4ff, size:0.13, transparent:true, opacity:0.65, sizeAttenuation:true,
-            }));
-            snow.name = "snow";
-            snow.userData.velocities = velocities;
-            snow.userData.phases     = phases;
-            sg.add(snow);
+            const snow = new THREE.Points(geo, new THREE.PointsMaterial({ color:0xddf4ff, size:0.13, transparent:true, opacity:0.65, sizeAttenuation:true }));
+            snow.name = "snow"; snow.userData.velocities = velocities; snow.userData.phases = phases; sg.add(snow);
         }
 
-        // ── Distant planet disc ──────────────────────
         function createPlanetDisc(sg) {
-            const planet = new THREE.Mesh(
-                new THREE.CircleGeometry(12,64),
-                new THREE.MeshBasicMaterial({color:0x1a3a6e,transparent:true,opacity:0.55,side:THREE.DoubleSide})
-            );
-            planet.position.set(-80,60,-150); planet.name = "planet"; sg.add(planet);
-
-            const halo = new THREE.Mesh(
-                new THREE.CircleGeometry(16,64),
-                new THREE.MeshBasicMaterial({color:0x0033aa,transparent:true,opacity:0.18,side:THREE.DoubleSide})
-            );
-            halo.position.set(-80,60,-150.5); sg.add(halo);
+            const p = new THREE.Mesh(new THREE.CircleGeometry(12,64), new THREE.MeshBasicMaterial({ color:0x1a3a6e, transparent:true, opacity:0.55, side:THREE.DoubleSide }));
+            p.position.set(-80,60,-150); p.name = "planet"; sg.add(p);
+            const h = new THREE.Mesh(new THREE.CircleGeometry(16,64), new THREE.MeshBasicMaterial({ color:0x0033aa, transparent:true, opacity:0.18, side:THREE.DoubleSide }));
+            h.position.set(-80,60,-150.5); sg.add(h);
         }
 
         // ─────────────────────────────────────────────
         // ANIMATION LOOP
         // ─────────────────────────────────────────────
-        let keyW=false, keyS=false, keyA=false, keyD=false;
-        const MOVE_SPEED   = 0.13;
-        const EYE_HEIGHT   = 2.0;
-        let   currentLore  = -1;
-
         function computeFrame(time) {
-            const t = time * 0.001;
-            const sg = sceneElements.sceneGraph;
+            const t        = time * 0.001;
+            const sg       = sceneElements.sceneGraph;
+            const cam      = sceneElements.camera;
             const controls = sceneElements.controls;
 
-            // Star rotation
+            // Generate/remove terrain chunks around the player
+            updateChunks();
+
+            // Sun tracks the player so shadows are always centred on the camera
+            const sun = sg.getObjectByName("sun");
+            if (sun) {
+                sun.position.set(cam.position.x - 60, 40, cam.position.z - 30);
+                sun.target.position.set(cam.position.x, 0, cam.position.z);
+                sun.target.updateMatrixWorld();
+                sun.intensity = 2.5 + Math.sin(t * 0.3) * 0.15;
+            }
+
+            // Star field slow rotation
             const stars = sg.getObjectByName("starField");
             if (stars) stars.rotation.y = t * 0.005;
-
-            // Sun pulsing
-            const sun = sg.getObjectByName("sun");
-            if (sun) sun.intensity = 2.5 + Math.sin(t*0.3)*0.15;
 
             // WASD movement
             if (controls.isLocked) {
@@ -388,13 +375,31 @@
                 if (keyD) controls.moveRight(   MOVE_SPEED);
                 if (keyA) controls.moveRight(  -MOVE_SPEED);
 
-                // Terrain following — keep camera above ground
-                const cam = sceneElements.camera;
-                const th  = terrainHeight(cam.position.x, cam.position.z);
-                if (cam.position.y < th + EYE_HEIGHT) cam.position.y = th + EYE_HEIGHT;
+                // Clamp camera above terrain — worldHeight uses the same coords as the mesh
+                const floorY = worldHeight(cam.position.x, cam.position.z) + EYE_HEIGHT;
+                if (cam.position.y < floorY) cam.position.y = floorY;
             }
 
-            // Artefact emissive pulsing + light animation
+            // Snow: follow player so it always surrounds the camera
+            const snow = sg.getObjectByName("snow");
+            if (snow) {
+                snow.position.set(cam.position.x, 0, cam.position.z);
+                const pos = snow.geometry.attributes.position;
+                const vel = snow.userData.velocities, ph = snow.userData.phases;
+                for (let i = 0; i < pos.count; i++) {
+                    let y = pos.getY(i) - vel[i];
+                    if (y < -2) {
+                        y = 26 + Math.random()*4;
+                        pos.setX(i, (Math.random()-0.5)*100);
+                        pos.setZ(i, (Math.random()-0.5)*100);
+                    }
+                    pos.setX(i, pos.getX(i) + Math.sin(t*0.4 + ph[i])*0.006);
+                    pos.setY(i, y);
+                }
+                pos.needsUpdate = true;
+            }
+
+            // Artefact emissive pulse + light animation
             artefacts.forEach((art, idx) => {
                 const pulse = 0.5 + 0.5*Math.sin(t*1.8 + idx*1.3);
                 const mesh  = sg.getObjectByName(art.meshName);
@@ -403,46 +408,22 @@
                 if (light)   light.intensity = 1.0 + pulse*1.5;
             });
 
-            // Snow drift + fall
-            const snow = sg.getObjectByName("snow");
-            if (snow) {
-                const pos = snow.geometry.attributes.position;
-                const vel = snow.userData.velocities;
-                const ph  = snow.userData.phases;
-                for (let i = 0; i < pos.count; i++) {
-                    let y = pos.getY(i) - vel[i];
-                    if (y < -2) {
-                        y = 26 + Math.random()*4;
-                        pos.setX(i, (Math.random()-0.5)*180);
-                        pos.setZ(i, (Math.random()-0.5)*180);
-                    }
-                    pos.setX(i, pos.getX(i) + Math.sin(t*0.4+ph[i])*0.006);
-                    pos.setY(i, y);
-                }
-                pos.needsUpdate = true;
-            }
-
-            // Proximity detection → lore HUD
+            // Proximity lore display
             if (controls.isLocked) {
-                const camPos = sceneElements.camera.position;
                 const lorePanel = document.getElementById('lore-panel');
                 let nearest = -1, nearDist = Infinity;
                 artefacts.forEach((art, idx) => {
-                    const d = camPos.distanceTo(art.position);
+                    const d = cam.position.distanceTo(art.position);
                     if (d < 12 && d < nearDist) { nearDist = d; nearest = idx; }
                 });
                 if (nearest !== currentLore) {
                     currentLore = nearest;
-                    if (nearest >= 0) {
-                        lorePanel.textContent = artefacts[nearest].lore;
-                        lorePanel.style.opacity = '1';
-                    } else {
-                        lorePanel.style.opacity = '0';
-                    }
+                    if (nearest >= 0) { lorePanel.textContent = artefacts[nearest].lore; lorePanel.style.opacity = '1'; }
+                    else              { lorePanel.style.opacity = '0'; }
                 }
             }
 
-            sceneElements.renderer.render(sceneElements.sceneGraph, sceneElements.camera);
+            sceneElements.renderer.render(sg, cam);
             requestAnimationFrame(computeFrame);
         }
 
@@ -451,24 +432,21 @@
         // ─────────────────────────────────────────────
         window.addEventListener('resize', () => {
             const W = window.innerWidth, H = window.innerHeight;
-            sceneElements.camera.aspect = W/H;
-            sceneElements.camera.updateProjectionMatrix();
+            sceneElements.camera.aspect = W/H; sceneElements.camera.updateProjectionMatrix();
             sceneElements.renderer.setSize(W, H);
         });
-
         document.addEventListener('keydown', e => {
-            switch (e.code) { case 'KeyW': keyW=true; break; case 'KeyS': keyS=true; break;
-                              case 'KeyA': keyA=true; break; case 'KeyD': keyD=true; break; }
+            switch (e.code) { case 'KeyW': keyW=true; break; case 'KeyS': keyS=true; break; case 'KeyA': keyA=true; break; case 'KeyD': keyD=true; break; }
         });
         document.addEventListener('keyup', e => {
-            switch (e.code) { case 'KeyW': keyW=false; break; case 'KeyS': keyS=false; break;
-                              case 'KeyA': keyA=false; break; case 'KeyD': keyD=false; break; }
+            switch (e.code) { case 'KeyW': keyW=false; break; case 'KeyS': keyS=false; break; case 'KeyA': keyA=false; break; case 'KeyD': keyD=false; break; }
         });
 
         // ─────────────────────────────────────────────
         // START
         // ─────────────────────────────────────────────
         initScene();
+        initTerrainMaterials();
         buildScene(sceneElements.sceneGraph);
         requestAnimationFrame(computeFrame);
 
@@ -478,7 +456,6 @@
 <body>
     <div id="Tag3DScene"></div>
 
-    <!-- Click-to-start overlay -->
     <div id="overlay">
         <div id="overlay-inner">
             <div id="overlay-title">&#10052; FROZEN FRONTIER</div>
@@ -488,16 +465,13 @@
         </div>
     </div>
 
-    <!-- In-game HUD (shown only when pointer is locked) -->
     <div id="hud" style="display:none;">
         <div id="hud-title">&#10052; FROZEN FRONTIER</div>
         <div id="hud-controls">WASD · Move &nbsp;|&nbsp; Mouse · Look &nbsp;|&nbsp; ESC · Pause</div>
     </div>
 
-    <!-- Crosshair -->
     <div id="crosshair" style="display:none;">+</div>
 
-    <!-- Proximity lore panel -->
     <div id="lore-panel"></div>
 </body>
 </html>
