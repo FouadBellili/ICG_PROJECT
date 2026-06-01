@@ -29,27 +29,119 @@
         // ─────────────────────────────────────────────
         // CONFIG
         // ─────────────────────────────────────────────
-        const CHUNK_SIZE    = 50;   // world units per chunk
-        const CHUNK_SEGS    = 40;   // vertex subdivisions per side
-        const VIEW_RANGE    = 3;    // chunks in each direction (7×7 grid)
-        const EYE_HEIGHT    = 2.0;  // camera above terrain surface
-        const MOVE_SPEED    = 0.12;
-        const PLAYER_RADIUS = 0.55; // collision capsule radius
+        const CHUNK_SIZE     = 50;
+        const CHUNK_SEGS     = 40;
+        const VIEW_RANGE     = 3;
+        const EYE_HEIGHT     = 2.0;
+        const MOVE_SPEED     = 0.12;
+        const PLAYER_RADIUS  = 0.55;
+        const GRAVITY        = -0.016;
+        const JUMP_FORCE     = 0.21;
+        const SENSITIVITY    = 0.65;   // PointerLockControls pointerSpeed
 
         // ─────────────────────────────────────────────
         // STATE
         // ─────────────────────────────────────────────
         const sceneElements  = { sceneGraph:null, camera:null, controls:null, renderer:null };
-        const chunkMap       = new Map();  // "cx,cz" → THREE.Group
-        const chunkColliders = new Map();  // "cx,cz" → [{x,z,radius}]
+        const chunkMap       = new Map();
+        const chunkColliders = new Map();
         const artefacts      = [];
         let   terrainMat, overlayMat, rockMat, spireMat;
-        let   keyW=false, keyS=false, keyA=false, keyD=false;
-        let   walkPhase  = 0;
-        let   currentLore = -1;
+
+        let keyW=false, keyS=false, keyA=false, keyD=false;
+        let walkPhase    = 0;
+        let prevStepCycle = 0;
+        let velocityY    = 0;
+        let isOnGround   = true;
+        let currentLore  = -1;
 
         // ─────────────────────────────────────────────
-        // SEEDED PRNG  (mulberry32 — deterministic per chunk)
+        // AUDIO  (Web Audio API — no external libs)
+        // ─────────────────────────────────────────────
+        let audioCtx     = null;
+        let footstepBuf  = null;
+
+        function initAudio() {
+            try {
+                audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+
+                // Shared white noise buffer (3 s, looped for ambient, also used for steps)
+                const SR = audioCtx.sampleRate;
+                const noiseBuf = audioCtx.createBuffer(1, SR * 3, SR);
+                const nd = noiseBuf.getChannelData(0);
+                for (let i = 0; i < nd.length; i++) nd[i] = Math.random() * 2 - 1;
+
+                // ── Ambient wind ──────────────────────
+                const windSrc = audioCtx.createBufferSource();
+                windSrc.buffer = noiseBuf; windSrc.loop = true;
+
+                const wf1 = audioCtx.createBiquadFilter();
+                wf1.type = 'bandpass'; wf1.frequency.value = 220; wf1.Q.value = 0.5;
+                const wf2 = audioCtx.createBiquadFilter();
+                wf2.type = 'lowpass'; wf2.frequency.value = 700;
+
+                const windGain = audioCtx.createGain(); windGain.gain.value = 0.10;
+                // Slow wind swell (0.06 Hz)
+                const windLFO = audioCtx.createOscillator(); windLFO.frequency.value = 0.06;
+                const windLFOGain = audioCtx.createGain(); windLFOGain.gain.value = 0.05;
+                windLFO.connect(windLFOGain); windLFOGain.connect(windGain.gain); windLFO.start();
+
+                windSrc.connect(wf1); wf1.connect(wf2); wf2.connect(windGain); windGain.connect(audioCtx.destination);
+                windSrc.start();
+
+                // ── Breathing ─────────────────────────
+                const breathSrc = audioCtx.createBufferSource();
+                breathSrc.buffer = noiseBuf; breathSrc.loop = true;
+
+                const bf = audioCtx.createBiquadFilter();
+                bf.type = 'bandpass'; bf.frequency.value = 160; bf.Q.value = 5;
+
+                const breathGain = audioCtx.createGain(); breathGain.gain.value = 0.0;
+                // Breathing rhythm ~0.22 Hz (≈13 breaths/min)
+                const breathLFO = audioCtx.createOscillator(); breathLFO.frequency.value = 0.22;
+                const breathLFOGain = audioCtx.createGain(); breathLFOGain.gain.value = 0.055;
+                breathLFO.connect(breathLFOGain); breathLFOGain.connect(breathGain.gain); breathLFO.start();
+
+                breathSrc.connect(bf); bf.connect(breathGain); breathGain.connect(audioCtx.destination);
+                breathSrc.start();
+
+                // ── Footstep buffer (short noise burst) ─
+                footstepBuf = audioCtx.createBuffer(1, Math.floor(SR * 0.1), SR);
+                const fd = footstepBuf.getChannelData(0);
+                for (let i = 0; i < fd.length; i++) fd[i] = Math.random() * 2 - 1;
+
+            } catch(e) {
+                console.warn('Audio unavailable:', e);
+            }
+        }
+
+        function playFootstep() {
+            if (!audioCtx || audioCtx.state !== 'running' || !footstepBuf) return;
+            const now = audioCtx.currentTime;
+            const src = audioCtx.createBufferSource(); src.buffer = footstepBuf;
+            const filt = audioCtx.createBiquadFilter(); filt.type = 'lowpass'; filt.frequency.value = 450;
+            const gain = audioCtx.createGain();
+            gain.gain.setValueAtTime(0.20, now);
+            gain.gain.exponentialRampToValueAtTime(0.001, now + 0.12);
+            src.connect(filt); filt.connect(gain); gain.connect(audioCtx.destination);
+            src.start(now); src.stop(now + 0.15);
+        }
+
+        function playLandSound() {
+            if (!audioCtx || audioCtx.state !== 'running') return;
+            const now = audioCtx.currentTime;
+            const osc = audioCtx.createOscillator();
+            osc.type = 'sine'; osc.frequency.setValueAtTime(55, now);
+            osc.frequency.exponentialRampToValueAtTime(25, now + 0.18);
+            const gain = audioCtx.createGain();
+            gain.gain.setValueAtTime(0.35, now);
+            gain.gain.exponentialRampToValueAtTime(0.001, now + 0.18);
+            osc.connect(gain); gain.connect(audioCtx.destination);
+            osc.start(now); osc.stop(now + 0.2);
+        }
+
+        // ─────────────────────────────────────────────
+        // SEEDED PRNG  (mulberry32)
         // ─────────────────────────────────────────────
         function mulberry32(seed) {
             let a = (seed >>> 0);
@@ -60,14 +152,10 @@
                 return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
             };
         }
-
-        // Unique seed per chunk grid position
-        function chunkSeed(cx, cz) {
-            return (((cx * 73856093) ^ (cz * 19349663)) >>> 0);
-        }
+        function chunkSeed(cx, cz) { return (((cx * 73856093) ^ (cz * 19349663)) >>> 0); }
 
         // ─────────────────────────────────────────────
-        // NOISE  (value noise, no external lib)
+        // NOISE
         // ─────────────────────────────────────────────
         function noise(x, z) {
             const ix=Math.floor(x), iz=Math.floor(z);
@@ -77,52 +165,65 @@
             return (r(ix,iz)*(1-ux)*(1-uz)+r(ix+1,iz)*ux*(1-uz)+r(ix,iz+1)*(1-ux)*uz+r(ix+1,iz+1)*ux*uz)*2-1;
         }
 
-        // Terrain elevation at any world (x, z). Used both for mesh vertices AND camera clamping.
         function worldHeight(wx, wz) {
             return noise(wx*0.04,wz*0.04)*3.5 + noise(wx*0.12,wz*0.12)*1.2
                  + noise(wx*0.35,wz*0.35)*0.4  + noise(wx*0.9, wz*0.9 )*0.12;
         }
 
         // ─────────────────────────────────────────────
-        // PBR TEXTURE GENERATORS  (512² canvas + anisotropy)
+        // TEXTURE GENERATORS
         // ─────────────────────────────────────────────
-        function makeRoughnessTexture(maxAniso) {
-            const S = 512;
+        function makeTexture(S, aniso, repeatN, pixelFn) {
             const cv = document.createElement('canvas'); cv.width = cv.height = S;
             const ctx = cv.getContext('2d'), img = ctx.createImageData(S, S);
             for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
-                const nx=x/S*10, ny=y/S*10;
-                const v = noise(nx,ny)*0.5 + noise(nx*2.3,ny*2.3)*0.3
-                        + noise(nx*5.1,ny*5.1)*0.15 + noise(nx*11,ny*11)*0.05;
-                const b = Math.floor((0.25 + (v*0.5+0.5)*0.65)*255);
-                const i = (y*S+x)*4; img.data[i]=b; img.data[i+1]=b; img.data[i+2]=b; img.data[i+3]=255;
+                const [r,g,b,a] = pixelFn(x/S, y/S);
+                const i=(y*S+x)*4; img.data[i]=r; img.data[i+1]=g; img.data[i+2]=b; img.data[i+3]=a;
             }
             ctx.putImageData(img, 0, 0);
             const t = new THREE.CanvasTexture(cv);
-            t.anisotropy = maxAniso;
-            t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(8, 8); return t;
+            t.anisotropy = aniso; t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(repeatN, repeatN);
+            return t;
         }
 
-        function makeNormalTexture(maxAniso) {
-            const S = 512;
-            const cv = document.createElement('canvas'); cv.width = cv.height = S;
-            const ctx = cv.getContext('2d'), img = ctx.createImageData(S, S);
-            for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
-                const nx=x/S*14, ny=y/S*14;
-                const samp = (sx,sz) =>
-                    noise(sx,sz)*0.5 + noise(sx*2.5,sz*2.5)*0.3 + noise(sx*6,sz*6)*0.15 + noise(sx*14,sz*14)*0.05;
-                const h  = samp(nx,     ny    );
-                const hR = samp(nx+0.07,ny    );
-                const hU = samp(nx,     ny+0.07);
-                const i = (y*S+x)*4;
-                img.data[i]   = Math.floor(((hR-h)*3*0.5+0.5)*255);
-                img.data[i+1] = Math.floor(((hU-h)*3*0.5+0.5)*255);
-                img.data[i+2] = 200; img.data[i+3] = 255;
-            }
-            ctx.putImageData(img, 0, 0);
-            const t = new THREE.CanvasTexture(cv);
-            t.anisotropy = maxAniso;
-            t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(8, 8); return t;
+        // Ice terrain roughness (smooth undulating pattern)
+        function makeIceRoughness(aniso) {
+            return makeTexture(512, aniso, 8, (u,v) => {
+                const x=u*10, z=v*10;
+                const val = noise(x,z)*0.5 + noise(x*2.3,z*2.3)*0.3 + noise(x*5.1,z*5.1)*0.15 + noise(x*11,z*11)*0.05;
+                const b = Math.floor((0.22 + (val*0.5+0.5)*0.65)*255);
+                return [b,b,b,255];
+            });
+        }
+
+        // Ice terrain normal map
+        function makeIceNormal(aniso) {
+            return makeTexture(512, aniso, 8, (u,v) => {
+                const x=u*14, z=v*14;
+                const s=(sx,sz) => noise(sx,sz)*0.5+noise(sx*2.5,sz*2.5)*0.3+noise(sx*6,sz*6)*0.15+noise(sx*14,sz*14)*0.05;
+                const h=s(x,z), hR=s(x+0.07,z), hU=s(x,z+0.07);
+                return [Math.floor(((hR-h)*3*0.5+0.5)*255), Math.floor(((hU-h)*3*0.5+0.5)*255), 200, 255];
+            });
+        }
+
+        // Rock roughness (grainy, high-frequency)
+        function makeRockRoughness(aniso) {
+            return makeTexture(512, aniso, 3, (u,v) => {
+                const x=u*22, z=v*22;
+                const val = noise(x,z)*0.35+noise(x*3.1,z*3.1)*0.3+noise(x*7.5,z*7.5)*0.22+noise(x*18,z*18)*0.13;
+                const b = Math.floor((0.45 + (val*0.5+0.5)*0.45)*255);
+                return [b,b,b,255];
+            });
+        }
+
+        // Rock normal map (sharp, fractured surface detail)
+        function makeRockNormal(aniso) {
+            return makeTexture(512, aniso, 3, (u,v) => {
+                const x=u*22, z=v*22;
+                const s=(sx,sz) => noise(sx,sz)*0.35+noise(sx*3.1,sz*3.1)*0.3+noise(sx*7.5,sz*7.5)*0.22+noise(sx*18,sz*18)*0.13;
+                const h=s(x,z), hR=s(x+0.04,z), hU=s(x,z+0.04);
+                return [Math.floor(((hR-h)*6*0.5+0.5)*255), Math.floor(((hU-h)*6*0.5+0.5)*255), 190, 255];
+            });
         }
 
         // ─────────────────────────────────────────────
@@ -143,11 +244,10 @@
             const sun = new THREE.DirectionalLight(0xaad4ff, 2.5);
             sun.castShadow = true;
             sun.shadow.mapSize.width = sun.shadow.mapSize.height = 2048;
-            sun.shadow.camera.near = 0.5; sun.shadow.camera.far = 150;
-            sun.shadow.camera.left = -60; sun.shadow.camera.right = 60;
-            sun.shadow.camera.top  =  60; sun.shadow.camera.bottom = -60;
-            sun.shadow.bias = -0.001;
-            sun.name = "sun"; sg.add(sun); sg.add(sun.target);
+            sun.shadow.camera.near=0.5; sun.shadow.camera.far=150;
+            sun.shadow.camera.left=-60; sun.shadow.camera.right=60;
+            sun.shadow.camera.top=60;   sun.shadow.camera.bottom=-60;
+            sun.shadow.bias=-0.001; sun.name="sun"; sg.add(sun); sg.add(sun.target);
 
             const fill = new THREE.DirectionalLight(0x2244aa, 0.4);
             fill.position.set(40,10,20); sg.add(fill);
@@ -164,28 +264,35 @@
             document.querySelector("#Tag3DScene").appendChild(renderer.domElement);
 
             const controls = new PointerLockControls(camera, renderer.domElement);
+            controls.pointerSpeed = SENSITIVITY;
             sceneElements.controls = controls;
 
             const overlay   = document.getElementById('overlay');
             const hud       = document.getElementById('hud');
             const crosshair = document.getElementById('crosshair');
             const lorePanel = document.getElementById('lore-panel');
-            overlay.addEventListener('click', () => controls.lock());
+
+            overlay.addEventListener('click', () => {
+                controls.lock();
+                if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
+            });
             controls.addEventListener('lock',   () => { overlay.style.display='none'; hud.style.display='flex'; crosshair.style.display='block'; });
             controls.addEventListener('unlock', () => { overlay.style.display='flex'; hud.style.display='none'; crosshair.style.display='none'; lorePanel.style.opacity='0'; });
         }
 
         // ─────────────────────────────────────────────
-        // SHARED MATERIALS  (created once, reused by all chunks)
+        // SHARED MATERIALS
         // ─────────────────────────────────────────────
         function initMaterials() {
-            const maxAniso = sceneElements.renderer.capabilities.getMaxAnisotropy();
-            const roughTex = makeRoughnessTexture(maxAniso);
-            const normTex  = makeNormalTexture(maxAniso);
+            const aniso = sceneElements.renderer.capabilities.getMaxAnisotropy();
+            const iceRough = makeIceRoughness(aniso);
+            const iceNorm  = makeIceNormal(aniso);
+            const rockRough = makeRockRoughness(aniso);
+            const rockNorm  = makeRockNormal(aniso);
 
             terrainMat = new THREE.MeshStandardMaterial({
                 color: 0xc8e8ff, roughness: 0.55, metalness: 0.18,
-                roughnessMap: roughTex, normalMap: normTex,
+                roughnessMap: iceRough, normalMap: iceNorm,
                 normalScale: new THREE.Vector2(0.65, 0.65),
             });
             overlayMat = new THREE.MeshStandardMaterial({
@@ -193,28 +300,27 @@
                 transparent: true, opacity: 0.18,
             });
             rockMat = new THREE.MeshStandardMaterial({
-                color: 0x2e3d4d, roughness: 0.92, metalness: 0.04,
+                color: 0x3a4a58, roughness: 0.9, metalness: 0.05,
+                roughnessMap: rockRough, normalMap: rockNorm,
+                normalScale: new THREE.Vector2(0.85, 0.85),
             });
             spireMat = new THREE.MeshStandardMaterial({
                 color: 0x9be8ff, roughness: 0.05, metalness: 0.38,
                 transparent: true, opacity: 0.83,
-                roughnessMap: roughTex, normalMap: normTex,
+                roughnessMap: iceRough, normalMap: iceNorm,
                 normalScale: new THREE.Vector2(0.3, 0.3),
             });
         }
 
         // ─────────────────────────────────────────────
-        // INFINITE CHUNK SYSTEM
+        // INFINITE CHUNK TERRAIN
         // ─────────────────────────────────────────────
-
-        // Mapping: PlaneGeometry rotated -π/2 → world.x = localX + cx·CS,  world.z = -localY + cz·CS
-        // So height must be sampled at those world coords for clamping to stay consistent.
         function buildChunk(cx, cz) {
             const rand = mulberry32(chunkSeed(cx, cz));
             const grp  = new THREE.Group();
-            const cols  = [];   // collision records for this chunk
+            const cols  = [];
 
-            // ── Terrain surface ──────────────────────
+            // Terrain mesh (PlaneGeometry rotated -π/2: world.x=lx+cx·CS, world.z=-ly+cz·CS)
             const geo = new THREE.PlaneGeometry(CHUNK_SIZE, CHUNK_SIZE, CHUNK_SEGS, CHUNK_SEGS);
             const p = geo.attributes.position;
             for (let i = 0; i < p.count; i++) {
@@ -235,104 +341,77 @@
             ice.position.set(cx * CHUNK_SIZE, 0.02, cz * CHUNK_SIZE);
             grp.add(ice);
 
-            // ── Rock clusters (1–3 per chunk) ────────
+            // Rock clusters (1–3 per chunk)
             const numClusters = 1 + Math.floor(rand() * 3);
             for (let c = 0; c < numClusters; c++) {
-                const clx = (rand()-0.5) * CHUNK_SIZE * 0.9 + cx * CHUNK_SIZE;
-                const clz = (rand()-0.5) * CHUNK_SIZE * 0.9 + cz * CHUNK_SIZE;
+                const clx = (rand()-0.5)*CHUNK_SIZE*0.9 + cx*CHUNK_SIZE;
+                const clz = (rand()-0.5)*CHUNK_SIZE*0.9 + cz*CHUNK_SIZE;
                 const numRocks = 1 + Math.floor(rand() * 4);
                 for (let r = 0; r < numRocks; r++) {
-                    const px = clx + (rand()-0.5)*6;
-                    const pz = clz + (rand()-0.5)*6;
-                    const size = 0.4 + rand()*1.8;
-                    const sx = 0.55+rand()*0.9, sy = 0.4+rand()*0.8, sz = 0.55+rand()*0.9;
-                    const detail = rand() > 0.55 ? 1 : 0;
-                    const mesh = new THREE.Mesh(new THREE.IcosahedronGeometry(size, detail), rockMat);
-                    mesh.scale.set(sx, sy, sz);
-                    mesh.position.set(px, worldHeight(px, pz) + size*sy*0.25, pz);
+                    const px = clx+(rand()-0.5)*6, pz = clz+(rand()-0.5)*6;
+                    const size = 0.4+rand()*1.8;
+                    const sx=0.55+rand()*0.9, sy=0.4+rand()*0.8, sz=0.55+rand()*0.9;
+                    const mesh = new THREE.Mesh(new THREE.IcosahedronGeometry(size, rand()>0.55?1:0), rockMat);
+                    mesh.scale.set(sx,sy,sz);
+                    mesh.position.set(px, worldHeight(px,pz)+size*sy*0.25, pz);
                     mesh.rotation.set(rand()*Math.PI, rand()*Math.PI*2, rand()*Math.PI);
-                    mesh.castShadow = mesh.receiveShadow = true;
-                    grp.add(mesh);
-                    // Collision: cylinder radius based on largest horizontal scale
-                    cols.push({ x: px, z: pz, radius: size * Math.max(sx, sz) * 0.85 });
+                    mesh.castShadow=mesh.receiveShadow=true; grp.add(mesh);
+                    cols.push({ x:px, z:pz, radius: size*Math.max(sx,sz)*0.85 });
                 }
             }
 
-            // ── Ice spire cluster (~35% chance) ─────
+            // Ice spire cluster (~35% chance)
             if (rand() < 0.35) {
-                const clx = (rand()-0.5) * CHUNK_SIZE * 0.8 + cx * CHUNK_SIZE;
-                const clz = (rand()-0.5) * CHUNK_SIZE * 0.8 + cz * CHUNK_SIZE;
-                const numSpires = 3 + Math.floor(rand() * 7);
-                for (let s = 0; s < numSpires; s++) {
-                    const px = clx + (rand()-0.5)*9;
-                    const pz = clz + (rand()-0.5)*9;
-                    const h  = 1.5 + rand()*8;
-                    const br = 0.08 + rand()*0.42;
-                    const mesh = new THREE.Mesh(new THREE.ConeGeometry(br, h, 5+Math.floor(rand()*4)), spireMat);
-                    mesh.position.set(px, worldHeight(px,pz) + h*0.5, pz);
-                    mesh.rotation.y = rand()*Math.PI*2;
-                    mesh.rotation.z = (rand()-0.5)*0.22;
-                    mesh.castShadow = mesh.receiveShadow = true;
-                    grp.add(mesh);
-                    cols.push({ x: px, z: pz, radius: br * 2.5 + 0.4 });
+                const clx=(rand()-0.5)*CHUNK_SIZE*0.8+cx*CHUNK_SIZE;
+                const clz=(rand()-0.5)*CHUNK_SIZE*0.8+cz*CHUNK_SIZE;
+                const numSpires=3+Math.floor(rand()*7);
+                for (let s=0;s<numSpires;s++) {
+                    const px=clx+(rand()-0.5)*9, pz=clz+(rand()-0.5)*9;
+                    const h=1.5+rand()*8, br=0.08+rand()*0.42;
+                    const mesh=new THREE.Mesh(new THREE.ConeGeometry(br,h,5+Math.floor(rand()*4)),spireMat);
+                    mesh.position.set(px, worldHeight(px,pz)+h*0.5, pz);
+                    mesh.rotation.y=rand()*Math.PI*2; mesh.rotation.z=(rand()-0.5)*0.22;
+                    mesh.castShadow=mesh.receiveShadow=true; grp.add(mesh);
+                    cols.push({ x:px, z:pz, radius: br*2.5+0.4 });
                 }
             }
 
-            return { group: grp, cols };
+            return { group:grp, cols };
         }
 
         function updateChunks() {
-            const sg  = sceneElements.sceneGraph;
-            const cam = sceneElements.camera;
-            const pcx = Math.round(cam.position.x / CHUNK_SIZE);
-            const pcz = Math.round(cam.position.z / CHUNK_SIZE);
-
-            const needed = new Set();
-            for (let dx = -VIEW_RANGE; dx <= VIEW_RANGE; dx++) {
-                for (let dz = -VIEW_RANGE; dz <= VIEW_RANGE; dz++) {
-                    const cx = pcx+dx, cz = pcz+dz;
-                    const key = `${cx},${cz}`;
-                    needed.add(key);
-                    if (!chunkMap.has(key)) {
-                        const { group, cols } = buildChunk(cx, cz);
-                        sg.add(group);
-                        chunkMap.set(key, group);
-                        chunkColliders.set(key, cols);
-                    }
+            const sg=sceneElements.sceneGraph, cam=sceneElements.camera;
+            const pcx=Math.round(cam.position.x/CHUNK_SIZE), pcz=Math.round(cam.position.z/CHUNK_SIZE);
+            const needed=new Set();
+            for (let dx=-VIEW_RANGE;dx<=VIEW_RANGE;dx++) for (let dz=-VIEW_RANGE;dz<=VIEW_RANGE;dz++) {
+                const cx=pcx+dx, cz=pcz+dz, key=`${cx},${cz}`;
+                needed.add(key);
+                if (!chunkMap.has(key)) {
+                    const {group,cols}=buildChunk(cx,cz);
+                    sg.add(group); chunkMap.set(key,group); chunkColliders.set(key,cols);
                 }
             }
-            for (const [key, group] of chunkMap) {
-                if (!needed.has(key)) {
-                    sg.remove(group);
-                    // Dispose geometries only; materials are shared
-                    group.traverse(c => { if (c.isMesh) c.geometry.dispose(); });
-                    chunkMap.delete(key);
-                    chunkColliders.delete(key);
-                }
+            for (const [key,group] of chunkMap) if (!needed.has(key)) {
+                sceneElements.sceneGraph.remove(group);
+                group.traverse(c=>{ if(c.isMesh) c.geometry.dispose(); });
+                chunkMap.delete(key); chunkColliders.delete(key);
             }
         }
 
-        // Push the camera out of any solid collider (rocks, spires)
         function resolveCollisions() {
-            const cam = sceneElements.camera;
-            for (const [, cols] of chunkColliders) {
-                for (const c of cols) {
-                    const dx = cam.position.x - c.x;
-                    const dz = cam.position.z - c.z;
-                    const d2 = dx*dx + dz*dz;
-                    const minD = PLAYER_RADIUS + c.radius;
-                    if (d2 < minD*minD && d2 > 0.0001) {
-                        const d = Math.sqrt(d2);
-                        const push = (minD - d) / d;
-                        cam.position.x += dx * push;
-                        cam.position.z += dz * push;
-                    }
+            const cam=sceneElements.camera;
+            for (const [,cols] of chunkColliders) for (const c of cols) {
+                const dx=cam.position.x-c.x, dz=cam.position.z-c.z;
+                const d2=dx*dx+dz*dz, minD=PLAYER_RADIUS+c.radius;
+                if (d2<minD*minD && d2>0.0001) {
+                    const d=Math.sqrt(d2), push=(minD-d)/d;
+                    cam.position.x+=dx*push; cam.position.z+=dz*push;
                 }
             }
         }
 
         // ─────────────────────────────────────────────
-        // FIXED SCENE OBJECTS  (artefacts, stars, snow, planet)
+        // FIXED OBJECTS
         // ─────────────────────────────────────────────
         function buildFixedObjects(sg) {
             createStarField(sg);
@@ -343,8 +422,8 @@
 
         function createStarField(sg) {
             const N=6000, pos=new Float32Array(N*3);
-            for(let i=0;i<N;i++){
-                const th=Math.random()*Math.PI*2, ph=Math.acos(2*Math.random()-1), r=300+Math.random()*100;
+            for (let i=0;i<N;i++) {
+                const th=Math.random()*Math.PI*2,ph=Math.acos(2*Math.random()-1),r=300+Math.random()*100;
                 pos[i*3]=r*Math.sin(ph)*Math.cos(th); pos[i*3+1]=r*Math.sin(ph)*Math.sin(th); pos[i*3+2]=r*Math.cos(ph);
             }
             const geo=new THREE.BufferGeometry(); geo.setAttribute('position',new THREE.BufferAttribute(pos,3));
@@ -354,15 +433,15 @@
 
         function createArtefacts(sg) {
             const loreList = [
-                "ANOMALY LOG 001 · Crystal lattice age: 4.2 billion cycles. Resonance frequency: unknown.",
-                "ANOMALY LOG 002 · Organic residue detected beneath ice layer. Life signs — indeterminate.",
-                "ANOMALY LOG 003 · Localised magnetic field distortion. Navigation systems compromised.",
-                "ANOMALY LOG 004 · Thermal signature 40°K above ambient. Deep subsurface origin.",
-                "ANOMALY LOG 005 · Repeating signal pulse every 7.3 seconds. Source: unknown.",
+                "Stasis signal detected. Duration: unknown. Origin: unknown.",
+                "Ice sample: non-terrestrial crystalline lattice. Growth direction: inward.",
+                "Magnetic anchor point. Something beneath the surface is listening.",
+                "Thermal bloom — 40°K above baseline. The cold here breathes.",
+                "Repeating pulse, 7.3 seconds. Not a machine. Not a lifeform. Something else.",
             ];
             const spots  = [[10,-10],[-25,8],[15,25],[-10,-30],[35,-5]];
             const colors = [0x00ffcc, 0xff44aa, 0xaaff00, 0x4499ff, 0xff8800];
-            spots.forEach(([ax, az], idx) => {
+            spots.forEach(([ax,az],idx) => {
                 const th=worldHeight(ax,az), h=1.2+Math.random()*1.5, color=colors[idx];
                 const mat=new THREE.MeshStandardMaterial({color,emissive:color,emissiveIntensity:0.6,roughness:0.1,metalness:0.5,transparent:true,opacity:0.85});
                 const crystal=new THREE.Mesh(new THREE.OctahedronGeometry(0.45+Math.random()*0.35,0),mat);
@@ -373,9 +452,8 @@
         }
 
         function createSnow(sg) {
-            const N=4000;
-            const pos=new Float32Array(N*3), vel=new Float32Array(N), ph=new Float32Array(N);
-            for(let i=0;i<N;i++){
+            const N=4000, pos=new Float32Array(N*3), vel=new Float32Array(N), ph=new Float32Array(N);
+            for (let i=0;i<N;i++) {
                 pos[i*3]=(Math.random()-0.5)*100; pos[i*3+1]=Math.random()*28; pos[i*3+2]=(Math.random()-0.5)*100;
                 vel[i]=0.015+Math.random()*0.035; ph[i]=Math.random()*Math.PI*2;
             }
@@ -395,28 +473,24 @@
         // ANIMATION LOOP
         // ─────────────────────────────────────────────
         function computeFrame(time) {
-            const t        = time * 0.001;
-            const sg       = sceneElements.sceneGraph;
-            const cam      = sceneElements.camera;
-            const controls = sceneElements.controls;
+            const t=time*0.001;
+            const sg=sceneElements.sceneGraph, cam=sceneElements.camera, controls=sceneElements.controls;
 
-            // Generate/remove terrain chunks
             updateChunks();
 
-            // Sun follows player so shadows are always present
-            const sun = sg.getObjectByName("sun");
+            // Sun tracks player for localised shadows
+            const sun=sg.getObjectByName("sun");
             if (sun) {
-                sun.position.set(cam.position.x-60, 40, cam.position.z-30);
-                sun.target.position.set(cam.position.x, 0, cam.position.z);
+                sun.position.set(cam.position.x-60,40,cam.position.z-30);
+                sun.target.position.set(cam.position.x,0,cam.position.z);
                 sun.target.updateMatrixWorld();
-                sun.intensity = 2.5 + Math.sin(t*0.3)*0.15;
+                sun.intensity=2.5+Math.sin(t*0.3)*0.15;
             }
 
-            // Star field slow rotation
-            const stars = sg.getObjectByName("starField");
-            if (stars) stars.rotation.y = t * 0.005;
+            const stars=sg.getObjectByName("starField");
+            if (stars) stars.rotation.y=t*0.005;
 
-            // ── Player movement ──────────────────────
+            // ── Movement + physics ───────────────────
             const moving = controls.isLocked && (keyW||keyS||keyA||keyD);
             if (controls.isLocked) {
                 if (keyW) controls.moveForward( MOVE_SPEED);
@@ -424,34 +498,45 @@
                 if (keyD) controls.moveRight(   MOVE_SPEED);
                 if (keyA) controls.moveRight(  -MOVE_SPEED);
 
-                // Solid collision against rocks and spires
                 resolveCollisions();
 
-                // Ground clamping + head bob
-                if (moving) walkPhase += 0.07;
-                const floorY  = worldHeight(cam.position.x, cam.position.z) + EYE_HEIGHT;
-                const bob     = moving ? Math.abs(Math.sin(walkPhase)) * 0.07 : 0;
-                const targetY = floorY + bob;
-                // Smooth vertical movement (lerp) with a hard floor safety
-                cam.position.y += (targetY - cam.position.y) * 0.2;
-                if (cam.position.y < floorY) cam.position.y = floorY;
+                // Gravity + jump
+                const floorY = worldHeight(cam.position.x, cam.position.z) + EYE_HEIGHT;
+                velocityY += GRAVITY;
+                cam.position.y += velocityY;
+
+                if (cam.position.y <= floorY) {
+                    if (velocityY < -0.08) playLandSound();
+                    cam.position.y = floorY;
+                    velocityY = 0;
+                    isOnGround = true;
+                } else {
+                    isOnGround = false;
+                }
+
+                // Head bob when walking on ground
+                if (moving && isOnGround) {
+                    walkPhase += 0.085;
+                    const cycle = Math.floor(walkPhase / Math.PI);
+                    if (cycle > prevStepCycle) { playFootstep(); prevStepCycle = cycle; }
+                    cam.position.y += Math.abs(Math.sin(walkPhase)) * 0.065;
+                }
             }
 
             // ── Snow follows camera ──────────────────
-            const snow = sg.getObjectByName("snow");
+            const snow=sg.getObjectByName("snow");
             if (snow) {
-                snow.position.set(cam.position.x, 0, cam.position.z);
+                snow.position.set(cam.position.x,0,cam.position.z);
                 const pa=snow.geometry.attributes.position, vel=snow.userData.vel, ph=snow.userData.ph;
-                for (let i=0; i<pa.count; i++) {
+                for (let i=0;i<pa.count;i++) {
                     let y=pa.getY(i)-vel[i];
                     if (y<-2) { y=26+Math.random()*4; pa.setX(i,(Math.random()-0.5)*100); pa.setZ(i,(Math.random()-0.5)*100); }
-                    pa.setX(i, pa.getX(i)+Math.sin(t*0.4+ph[i])*0.006);
-                    pa.setY(i, y);
+                    pa.setX(i,pa.getX(i)+Math.sin(t*0.4+ph[i])*0.006); pa.setY(i,y);
                 }
                 pa.needsUpdate=true;
             }
 
-            // ── Artefact emissive pulse ──────────────
+            // ── Artefact pulse ───────────────────────
             artefacts.forEach((art,idx) => {
                 const pulse=0.5+0.5*Math.sin(t*1.8+idx*1.3);
                 const mesh=sg.getObjectByName(art.meshName), light=sg.getObjectByName(art.lightName);
@@ -459,7 +544,7 @@
                 if (light)   light.intensity=1.0+pulse*1.5;
             });
 
-            // ── Proximity lore HUD ───────────────────
+            // ── Proximity lore ───────────────────────
             if (controls.isLocked) {
                 const lorePanel=document.getElementById('lore-panel');
                 let nearest=-1, nearDist=Infinity;
@@ -486,16 +571,30 @@
             sceneElements.camera.aspect=W/H; sceneElements.camera.updateProjectionMatrix();
             sceneElements.renderer.setSize(W,H);
         });
+
         document.addEventListener('keydown', e => {
-            switch(e.code){case'KeyW':keyW=true;break;case'KeyS':keyS=true;break;case'KeyA':keyA=true;break;case'KeyD':keyD=true;break;}
+            switch(e.code) {
+                case 'KeyW': keyW=true; break; case 'KeyS': keyS=true; break;
+                case 'KeyA': keyA=true; break; case 'KeyD': keyD=true; break;
+                case 'Space':
+                    e.preventDefault();
+                    if (isOnGround && sceneElements.controls.isLocked) {
+                        velocityY = JUMP_FORCE; isOnGround = false;
+                    }
+                    break;
+            }
         });
         document.addEventListener('keyup', e => {
-            switch(e.code){case'KeyW':keyW=false;break;case'KeyS':keyS=false;break;case'KeyA':keyA=false;break;case'KeyD':keyD=false;break;}
+            switch(e.code) {
+                case 'KeyW': keyW=false; break; case 'KeyS': keyS=false; break;
+                case 'KeyA': keyA=false; break; case 'KeyD': keyD=false; break;
+            }
         });
 
         // ─────────────────────────────────────────────
         // START
         // ─────────────────────────────────────────────
+        initAudio();
         initScene();
         initMaterials();
         buildFixedObjects(sceneElements.sceneGraph);
@@ -510,15 +609,15 @@
     <div id="overlay">
         <div id="overlay-inner">
             <div id="overlay-title">&#10052; FROZEN FRONTIER</div>
-            <div id="overlay-subtitle">An Alien Ice World Explorer</div>
-            <div id="overlay-click">CLICK TO EXPLORE</div>
-            <div id="overlay-hint">WASD · Move &nbsp;|&nbsp; Mouse · Look &nbsp;|&nbsp; ESC · Pause</div>
+            <div id="overlay-subtitle">An Alien Ice World</div>
+            <div id="overlay-click">CLICK TO ENTER</div>
+            <div id="overlay-hint">WASD · Move &nbsp;|&nbsp; Mouse · Look &nbsp;|&nbsp; Space · Jump &nbsp;|&nbsp; ESC · Pause</div>
         </div>
     </div>
 
     <div id="hud" style="display:none;">
         <div id="hud-title">&#10052; FROZEN FRONTIER</div>
-        <div id="hud-controls">WASD · Move &nbsp;|&nbsp; Mouse · Look &nbsp;|&nbsp; ESC · Pause</div>
+        <div id="hud-controls">WASD · Move &nbsp;|&nbsp; Mouse · Look &nbsp;|&nbsp; Space · Jump</div>
     </div>
 
     <div id="crosshair" style="display:none;">+</div>
