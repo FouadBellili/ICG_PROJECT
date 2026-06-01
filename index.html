@@ -236,6 +236,26 @@
             return new THREE.CanvasTexture(cv);
         }
 
+        // Creates a smooth, organically deformed rock geometry.
+        // Uses world position (px, pz) as a per-rock noise offset so each
+        // rock is uniquely shaped without consuming the seeded RNG.
+        function createRockGeo(size, px, pz) {
+            const geo = new THREE.IcosahedronGeometry(size, 2); // 162 verts — smooth silhouette
+            const pos = geo.attributes.position;
+            for (let i = 0; i < pos.count; i++) {
+                const lx = pos.getX(i), ly = pos.getY(i), lz = pos.getZ(i);
+                // Offset noise coords by world pos so every rock is unique
+                const nx = lx + px * 0.43, ny = ly + pz * 0.37, nz = lz + (px - pz) * 0.29;
+                const d = 1.0
+                    + noise(nx * 1.8, nz * 1.8) * 0.20   // coarse lumps
+                    + noise(ny * 4.3, nz * 4.3) * 0.09   // medium bumps
+                    + noise(nx * 9.8, ny * 9.8) * 0.03;  // fine surface variation
+                pos.setXYZ(i, lx * d, ly * d, lz * d);
+            }
+            geo.computeVertexNormals();
+            return geo;
+        }
+
         // Rock normal map (sharp, fractured surface detail)
         function makeRockNormal(aniso) {
             return makeTexture(512, aniso, 3, (u,v) => {
@@ -320,9 +340,9 @@
                 transparent: true, opacity: 0.28,
             });
             rockMat = new THREE.MeshStandardMaterial({
-                color: 0x3a4a58, roughness: 0.9, metalness: 0.05,
+                color: 0x2e3c48, roughness: 0.92, metalness: 0.04,
                 roughnessMap: rockRough, normalMap: rockNorm,
-                normalScale: new THREE.Vector2(0.85, 0.85),
+                normalScale: new THREE.Vector2(1.4, 1.4),
             });
             spireMat = new THREE.MeshStandardMaterial({
                 color: 0x9be8ff, roughness: 0.05, metalness: 0.38,
@@ -371,9 +391,9 @@
                     const px = clx+(rand()-0.5)*6, pz = clz+(rand()-0.5)*6;
                     const size = 0.4+rand()*1.8;
                     const sx=0.55+rand()*0.9, sy=0.4+rand()*0.8, sz=0.55+rand()*0.9;
-                    const mesh = new THREE.Mesh(new THREE.IcosahedronGeometry(size, rand()>0.55?1:0), rockMat);
+                    const mesh = new THREE.Mesh(createRockGeo(size, px, pz), rockMat);
                     mesh.scale.set(sx,sy,sz);
-                    mesh.position.set(px, worldHeight(px,pz)+size*sy*0.25, pz);
+                    mesh.position.set(px, worldHeight(px,pz)+size*sy*0.18, pz);
                     mesh.rotation.set(rand()*Math.PI, rand()*Math.PI*2, rand()*Math.PI);
                     mesh.castShadow=mesh.receiveShadow=true; grp.add(mesh);
                     cols.push({ x:px, z:pz, radius: size*Math.max(sx,sz)*0.85 });
