@@ -45,6 +45,8 @@
         const sceneElements  = { sceneGraph:null, camera:null, controls:null, renderer:null };
         const chunkMap       = new Map();
         const chunkColliders = new Map();
+        const chunkQueue     = [];          // pending chunks — built 2/frame max
+        let   initialBuild   = true;        // first call builds everything at once
         const artefacts      = [];
         let   terrainMat, overlayMat, rockMat, spireMat;
 
@@ -540,21 +542,47 @@
         }
 
         function updateChunks() {
-            const sg=sceneElements.sceneGraph, cam=sceneElements.camera;
-            const pcx=Math.round(cam.position.x/CHUNK_SIZE), pcz=Math.round(cam.position.z/CHUNK_SIZE);
-            const needed=new Set();
-            for (let dx=-VIEW_RANGE;dx<=VIEW_RANGE;dx++) for (let dz=-VIEW_RANGE;dz<=VIEW_RANGE;dz++) {
-                const cx=pcx+dx, cz=pcz+dz, key=`${cx},${cz}`;
-                needed.add(key);
-                if (!chunkMap.has(key)) {
-                    const {group,cols}=buildChunk(cx,cz);
-                    sg.add(group); chunkMap.set(key,group); chunkColliders.set(key,cols);
+            const sg  = sceneElements.sceneGraph;
+            const cam = sceneElements.camera;
+            const pcx = Math.round(cam.position.x / CHUNK_SIZE);
+            const pcz = Math.round(cam.position.z / CHUNK_SIZE);
+
+            const needed = new Set();
+            for (let dx = -VIEW_RANGE; dx <= VIEW_RANGE; dx++) {
+                for (let dz = -VIEW_RANGE; dz <= VIEW_RANGE; dz++) {
+                    const cx = pcx+dx, cz = pcz+dz, key = `${cx},${cz}`;
+                    needed.add(key);
+                    // Queue chunk if not loaded and not already queued
+                    if (!chunkMap.has(key) && !chunkQueue.some(q => q.key === key)) {
+                        chunkQueue.push({ cx, cz, key });
+                    }
                 }
             }
-            for (const [key,group] of chunkMap) if (!needed.has(key)) {
-                sceneElements.sceneGraph.remove(group);
-                group.traverse(c=>{ if(c.isMesh) c.geometry.dispose(); });
-                chunkMap.delete(key); chunkColliders.delete(key);
+
+            // First call: build everything synchronously so terrain is ready before
+            // the player enters. Subsequent calls: max 2 per frame to stay < 4 ms.
+            const limit = initialBuild ? Infinity : 2;
+            initialBuild = false;
+            let built = 0;
+            while (chunkQueue.length > 0 && built < limit) {
+                const item = chunkQueue.shift();
+                if (needed.has(item.key) && !chunkMap.has(item.key)) {
+                    const { group, cols } = buildChunk(item.cx, item.cz);
+                    sg.add(group);
+                    chunkMap.set(item.key, group);
+                    chunkColliders.set(item.key, cols);
+                    built++;
+                }
+            }
+
+            // Unload distant chunks
+            for (const [key, group] of chunkMap) {
+                if (!needed.has(key)) {
+                    sg.remove(group);
+                    group.traverse(c => { if (c.isMesh) c.geometry.dispose(); });
+                    chunkMap.delete(key);
+                    chunkColliders.delete(key);
+                }
             }
         }
 
@@ -838,14 +866,16 @@
 
                 resolveCollisions();
 
-                // Gravity + jump (shared)
+                // Gravity + jump (shared) — only accumulate when airborne
                 const floorY = worldHeight(cam.position.x, cam.position.z) + EYE_HEIGHT;
-                velocityY += GRAVITY;
+                if (!isOnGround) velocityY += GRAVITY;
                 cam.position.y += velocityY;
                 if (cam.position.y <= floorY) {
                     if (velocityY < -0.08) playLandSound();
                     cam.position.y = floorY; velocityY = 0; isOnGround = true;
-                } else { isOnGround = false; }
+                } else {
+                    isOnGround = false;
+                }
 
                 // Head bob when walking on ground
                 if (moving && isOnGround) {
@@ -949,6 +979,7 @@
         initScene();
         setupMobileControls();
         initMaterials();
+        updateChunks();       // pre-build initial visible area before first render
         buildFixedObjects(sceneElements.sceneGraph);
         requestAnimationFrame(computeFrame);
 
