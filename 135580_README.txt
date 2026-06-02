@@ -1,0 +1,10 @@
+Student Name:     Fouad Bellili
+Student Number:   135580
+
+Project Name:     Frozen Frontier — An Alien Ice World Explorer
+
+Deployed Project: https://fouadbellili.github.io/ICG_PROJECT/
+
+GitHub Repository: https://github.com/FouadBellili/ICG_PROJECT
+
+Demo Video URL:   [INSERT VIDEO URL HERE]
