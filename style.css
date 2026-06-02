@@ -177,6 +177,18 @@ body {
         radial-gradient(ellipse at 100% 100%,rgba(120,185,255,0.14) 0%, transparent 38%);
 }
 
+/* ── Compass radar (bottom-right) ──────────────────── */
+#compass {
+    position: fixed;
+    bottom: 28px;
+    right: 28px;
+    z-index: 10;
+    pointer-events: none;
+    border-radius: 50%;
+    /* subtle outer glow */
+    filter: drop-shadow(0 0 6px rgba(80, 160, 255, 0.35));
+}
+
 /* ── Proximity lore panel ──────────────────────────── */
 #lore-panel {
     position: fixed;
