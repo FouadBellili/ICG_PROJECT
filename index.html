@@ -52,6 +52,14 @@
 
         const IS_MOBILE = ('ontouchstart' in window) || navigator.maxTouchPoints > 0;
 
+        // Desktop rotation — tracked via raw mousemove instead of relying on
+        // PointerLockControls' internal Euler decomposition, which can flip ±π at
+        // yaw=180° and skip the camera. PointerLockControls still manages pointer capture.
+        let desktopYaw   = 0;
+        let desktopPitch = 0;
+        const _fwd = new THREE.Vector3();
+        const _rgt = new THREE.Vector3();
+
         let keyW=false, keyS=false, keyA=false, keyD=false;
         let walkPhase    = 0;
         let prevStepCycle = 0;
@@ -374,9 +382,23 @@
                 document.getElementById('overlay-click').textContent = 'TAP TO ENTER';
                 document.getElementById('overlay-hint').textContent  = 'Left thumb · Move   Right thumb · Look   Button · Jump';
             } else {
-                overlay.addEventListener('click', () => { controls.lock(); if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume(); });
+                overlay.addEventListener('click', () => {
+                    controls.lock();
+                    if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
+                });
                 controls.addEventListener('lock',   enterGame);
                 controls.addEventListener('unlock', exitGame);
+
+                // Track rotation with a plain mousemove accumulator.
+                // PointerLockControls also runs its own handler, but we overwrite
+                // the camera rotation each frame from desktopYaw/desktopPitch,
+                // so its Euler decomposition never has a chance to flip.
+                document.addEventListener('mousemove', e => {
+                    if (!controls.isLocked) return;
+                    desktopYaw   -= e.movementX * 0.002 * SENSITIVITY;
+                    desktopPitch -= e.movementY * 0.002 * SENSITIVITY;
+                    desktopPitch  = Math.max(-1.4, Math.min(1.4, desktopPitch));
+                });
             }
         }
 
@@ -856,12 +878,22 @@
                     cam.rotation.y = mobileYaw;
                     cam.rotation.x = mobilePitch;
                 } else {
-                    // ── Desktop: keyboard + PointerLockControls ──
-                    if (keyW) controls.moveForward( MOVE_SPEED);
-                    if (keyS) controls.moveForward(-MOVE_SPEED);
-                    if (keyD) controls.moveRight(   MOVE_SPEED);
-                    if (keyA) controls.moveRight(  -MOVE_SPEED);
-                    moving = keyW || keyS || keyA || keyD;
+                    // ── Desktop: manual rotation + movement ──────
+                    // Apply our own accumulated yaw/pitch — this overwrites whatever
+                    // PointerLockControls wrote to the quaternion and eliminates the flip.
+                    cam.rotation.order = 'YXZ';
+                    cam.rotation.y = desktopYaw;
+                    cam.rotation.x = desktopPitch;
+
+                    if (keyW || keyS || keyA || keyD) {
+                        _fwd.set(-Math.sin(desktopYaw), 0, -Math.cos(desktopYaw));
+                        _rgt.set( Math.cos(desktopYaw), 0, -Math.sin(desktopYaw));
+                        if (keyW) cam.position.addScaledVector(_fwd,  MOVE_SPEED);
+                        if (keyS) cam.position.addScaledVector(_fwd, -MOVE_SPEED);
+                        if (keyD) cam.position.addScaledVector(_rgt,  MOVE_SPEED);
+                        if (keyA) cam.position.addScaledVector(_rgt, -MOVE_SPEED);
+                        moving = true;
+                    }
                 }
 
                 resolveCollisions();
@@ -959,7 +991,7 @@
                 case 'KeyA': keyA=true; break; case 'KeyD': keyD=true; break;
                 case 'Space':
                     e.preventDefault();
-                    if (!IS_MOBILE && isOnGround && sceneElements.controls.isLocked) {
+                    if (!IS_MOBILE && isOnGround && isPlaying()) {
                         velocityY = JUMP_FORCE; isOnGround = false;
                     }
                     break;
