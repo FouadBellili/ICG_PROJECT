@@ -846,7 +846,7 @@
                         }
                     }
                     if (joyX !== 0 || joyZ !== 0) {
-                        const fwd = { x: Math.sin(mobileYaw), z: Math.cos(mobileYaw) };
+                        const fwd = { x: -Math.sin(mobileYaw), z: -Math.cos(mobileYaw) };
                         const rgt = { x: Math.cos(mobileYaw), z:-Math.sin(mobileYaw) };
                         cam.position.x += (-joyZ * fwd.x + joyX * rgt.x) * MOVE_SPEED;
                         cam.position.z += (-joyZ * fwd.z + joyX * rgt.z) * MOVE_SPEED;
