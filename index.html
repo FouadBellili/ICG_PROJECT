@@ -24,7 +24,6 @@
     <script type="module">
 
         import * as THREE from "three";
-        import { PointerLockControls } from "three/addons/controls/PointerLockControls.js";
 
         // ─────────────────────────────────────────────
         // CONFIG
@@ -37,7 +36,7 @@
         const PLAYER_RADIUS  = 0.55;
         const GRAVITY        = -0.016;
         const JUMP_FORCE     = 0.21;
-        const SENSITIVITY    = 0.65;   // PointerLockControls pointerSpeed
+        const SENSITIVITY    = 0.65;   // mouse look sensitivity
 
         // ─────────────────────────────────────────────
         // STATE
@@ -52,9 +51,7 @@
 
         const IS_MOBILE = ('ontouchstart' in window) || navigator.maxTouchPoints > 0;
 
-        // Desktop rotation — tracked via raw mousemove instead of relying on
-        // PointerLockControls' internal Euler decomposition, which can flip ±π at
-        // yaw=180° and skip the camera. PointerLockControls still manages pointer capture.
+        // Desktop rotation — accumulated from raw mousemove, never decomposed from quaternion
         let desktopYaw   = 0;
         let desktopPitch = 0;
         const _fwd = new THREE.Vector3();
@@ -76,7 +73,7 @@
         const JOY_RADIUS = 55;          // pixels before joystick is at max
 
         // True when the player is actively controlling the scene
-        const isPlaying = () => IS_MOBILE ? mobileActive : sceneElements.controls.isLocked;
+        const isPlaying = () => IS_MOBILE ? mobileActive : sceneElements.desktopLocked;
 
         // Wind — slowly shifting direction, drives snow drift
         const wind = { x: 0, z: 0 };
@@ -342,18 +339,17 @@
             sceneElements.renderer = renderer;
             document.querySelector("#Tag3DScene").appendChild(renderer.domElement);
 
-            const controls = new PointerLockControls(camera, renderer.domElement);
-            controls.pointerSpeed = SENSITIVITY;
-            sceneElements.controls = controls;
+            // Set rotation order once — never changed again
+            camera.rotation.order = 'YXZ';
+            sceneElements.desktopLocked = false;
 
             const overlay   = document.getElementById('overlay');
             const hud       = document.getElementById('hud');
             const crosshair = document.getElementById('crosshair');
             const lorePanel = document.getElementById('lore-panel');
-
-            const counter    = document.getElementById('anomaly-counter');
-            const compass    = document.getElementById('compass');
-            const jumpBtn    = document.getElementById('jump-btn');
+            const counter   = document.getElementById('anomaly-counter');
+            const compass   = document.getElementById('compass');
+            const jumpBtn   = document.getElementById('jump-btn');
 
             function enterGame() {
                 if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
@@ -375,26 +371,25 @@
             }
 
             if (IS_MOBILE) {
-                // Mobile: tap overlay to enter — no pointer lock needed
                 overlay.addEventListener('touchend', e => { e.preventDefault(); mobileActive = true; enterGame(); }, { passive: false });
                 overlay.addEventListener('click',    () => { mobileActive = true; enterGame(); });
-                // Update overlay hint for touch
                 document.getElementById('overlay-click').textContent = 'TAP TO ENTER';
                 document.getElementById('overlay-hint').textContent  = 'Left thumb · Move   Right thumb · Look   Button · Jump';
             } else {
+                // Raw Pointer Lock API — no library, no competing handlers
+                const el = renderer.domElement;
                 overlay.addEventListener('click', () => {
-                    controls.lock();
+                    el.requestPointerLock();
                     if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
                 });
-                controls.addEventListener('lock',   enterGame);
-                controls.addEventListener('unlock', exitGame);
-
-                // Track rotation with a plain mousemove accumulator.
-                // PointerLockControls also runs its own handler, but we overwrite
-                // the camera rotation each frame from desktopYaw/desktopPitch,
-                // so its Euler decomposition never has a chance to flip.
+                document.addEventListener('pointerlockchange', () => {
+                    sceneElements.desktopLocked = (document.pointerLockElement === el);
+                    if (sceneElements.desktopLocked) enterGame();
+                    else                             exitGame();
+                });
+                // Single mousemove listener — accumulates yaw/pitch with no Euler decomposition
                 document.addEventListener('mousemove', e => {
-                    if (!controls.isLocked) return;
+                    if (!sceneElements.desktopLocked) return;
                     desktopYaw   -= e.movementX * 0.002 * SENSITIVITY;
                     desktopPitch -= e.movementY * 0.002 * SENSITIVITY;
                     desktopPitch  = Math.max(-1.4, Math.min(1.4, desktopPitch));
@@ -839,7 +834,7 @@
         // ─────────────────────────────────────────────
         function computeFrame(time) {
             const t=time*0.001;
-            const sg=sceneElements.sceneGraph, cam=sceneElements.camera, controls=sceneElements.controls;
+            const sg=sceneElements.sceneGraph, cam=sceneElements.camera;
 
             updateChunks();
 
@@ -874,14 +869,10 @@
                         cam.position.z += (-joyZ * fwd.z + joyX * rgt.z) * MOVE_SPEED;
                         moving = true;
                     }
-                    cam.rotation.order = 'YXZ';
                     cam.rotation.y = mobileYaw;
                     cam.rotation.x = mobilePitch;
                 } else {
-                    // ── Desktop: manual rotation + movement ──────
-                    // Apply our own accumulated yaw/pitch — this overwrites whatever
-                    // PointerLockControls wrote to the quaternion and eliminates the flip.
-                    cam.rotation.order = 'YXZ';
+                    // ── Desktop: direct yaw/pitch rotation ───────
                     cam.rotation.y = desktopYaw;
                     cam.rotation.x = desktopPitch;
 
@@ -991,7 +982,7 @@
                 case 'KeyA': keyA=true; break; case 'KeyD': keyD=true; break;
                 case 'Space':
                     e.preventDefault();
-                    if (!IS_MOBILE && isOnGround && isPlaying()) {
+                    if (!IS_MOBILE && isOnGround && sceneElements.desktopLocked) {
                         velocityY = JUMP_FORCE; isOnGround = false;
                     }
                     break;
