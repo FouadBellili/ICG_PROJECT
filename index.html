@@ -54,6 +54,7 @@
         let velocityY    = 0;
         let isOnGround   = true;
         let currentLore  = -1;
+        const discovered = new Set();   // indices of found artefacts
 
         // Wind — slowly shifting direction, drives snow drift
         const wind = { x: 0, z: 0 };
@@ -132,6 +133,22 @@
             gain.gain.exponentialRampToValueAtTime(0.001, now + 0.12);
             src.connect(filt); filt.connect(gain); gain.connect(audioCtx.destination);
             src.start(now); src.stop(now + 0.15);
+        }
+
+        function playDiscoverySound() {
+            if (!audioCtx || audioCtx.state !== 'running') return;
+            const now = audioCtx.currentTime;
+            // Ascending ethereal chord
+            [220, 330, 528, 660, 880].forEach((freq, i) => {
+                const osc = audioCtx.createOscillator();
+                osc.type = 'sine'; osc.frequency.value = freq;
+                const gain = audioCtx.createGain();
+                gain.gain.setValueAtTime(0,    now + i*0.07);
+                gain.gain.linearRampToValueAtTime(0.12, now + i*0.07 + 0.06);
+                gain.gain.exponentialRampToValueAtTime(0.001, now + i*0.07 + 0.55);
+                osc.connect(gain); gain.connect(audioCtx.destination);
+                osc.start(now + i*0.07); osc.stop(now + i*0.07 + 0.6);
+            });
         }
 
         function playLandSound() {
@@ -316,8 +333,9 @@
                 controls.lock();
                 if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
             });
-            controls.addEventListener('lock',   () => { overlay.style.display='none'; hud.style.display='flex'; crosshair.style.display='block'; });
-            controls.addEventListener('unlock', () => { overlay.style.display='flex'; hud.style.display='none'; crosshair.style.display='none'; lorePanel.style.opacity='0'; });
+            const counter = document.getElementById('anomaly-counter');
+            controls.addEventListener('lock',   () => { overlay.style.display='none'; hud.style.display='flex'; crosshair.style.display='block'; counter.style.display='block'; });
+            controls.addEventListener('unlock', () => { overlay.style.display='flex'; hud.style.display='none'; crosshair.style.display='none'; counter.style.display='none'; lorePanel.style.opacity='0'; });
         }
 
         // ─────────────────────────────────────────────
@@ -479,7 +497,13 @@
                 "Thermal bloom — 40°K above baseline. The cold here breathes.",
                 "Repeating pulse, 7.3 seconds. Not a machine. Not a lifeform. Something else.",
             ];
-            const spots  = [[10,-10],[-25,8],[15,25],[-10,-30],[35,-5]];
+            // One artefact per angular sector, random radius 28–80, so they
+            // spread across the whole map rather than clustering near spawn
+            const spots = Array.from({length:5}, (_,i) => {
+                const angle = (i/5)*Math.PI*2 + (Math.random()-0.5)*0.9;
+                const r     = 28 + Math.random()*52;
+                return [Math.cos(angle)*r, Math.sin(angle)*r];
+            });
             const colors = [0x00ffcc, 0xff44aa, 0xaaff00, 0x4499ff, 0xff8800];
             spots.forEach(([ax,az],idx) => {
                 const th=worldHeight(ax,az), h=1.2+Math.random()*1.5, color=colors[idx];
@@ -527,6 +551,33 @@
             p.position.set(-80,60,-150); sg.add(p);
             const h=new THREE.Mesh(new THREE.CircleGeometry(16,64),new THREE.MeshBasicMaterial({color:0x0033aa,transparent:true,opacity:0.18,side:THREE.DoubleSide}));
             h.position.set(-80,60,-150.5); sg.add(h);
+        }
+
+        // ─────────────────────────────────────────────
+        // DISCOVERY UI HELPERS
+        // ─────────────────────────────────────────────
+        function updateCounter() {
+            const n = discovered.size;
+            const el = document.getElementById('anomaly-counter');
+            if (!el) return;
+            el.innerHTML = `<span class="cnt-num">${n}</span><span class="cnt-sep"> / 5</span><span class="cnt-label"> ANOMALIES</span>`;
+            if (n === 5) {
+                el.classList.add('complete');
+                document.getElementById('discovery-msg').textContent = 'ALL ANOMALIES DETECTED';
+                document.getElementById('discovery-msg').style.opacity = '1';
+            }
+        }
+
+        let discoveryTimer = null;
+        function showDiscoveryFlash(idx) {
+            const msg = document.getElementById('discovery-msg');
+            if (!msg) return;
+            if (discoveryTimer) clearTimeout(discoveryTimer);
+            msg.textContent = `ANOMALY ${idx + 1} DETECTED`;
+            msg.style.opacity = '1';
+            if (discovered.size < 5) {
+                discoveryTimer = setTimeout(() => { msg.style.opacity = '0'; }, 2500);
+            }
         }
 
         // ─────────────────────────────────────────────
@@ -613,13 +664,21 @@
                 if (light)   light.intensity=1.0+pulse*1.5;
             });
 
-            // ── Proximity lore ───────────────────────
+            // ── Proximity: lore display + discovery ──
             if (controls.isLocked) {
-                const lorePanel=document.getElementById('lore-panel');
+                const lorePanel = document.getElementById('lore-panel');
                 let nearest=-1, nearDist=Infinity;
                 artefacts.forEach((art,idx) => {
-                    const d=cam.position.distanceTo(art.position);
-                    if (d<12&&d<nearDist) { nearDist=d; nearest=idx; }
+                    const d = cam.position.distanceTo(art.position);
+                    if (d<12 && d<nearDist) { nearDist=d; nearest=idx; }
+
+                    // Discovery triggers on first approach within 8 units
+                    if (d<8 && !discovered.has(idx)) {
+                        discovered.add(idx);
+                        updateCounter();
+                        showDiscoveryFlash(idx);
+                        playDiscoverySound();
+                    }
                 });
                 if (nearest!==currentLore) {
                     currentLore=nearest;
@@ -690,6 +749,14 @@
     </div>
 
     <div id="crosshair" style="display:none;">+</div>
+
+    <!-- Anomaly discovery counter (top-right, shown when locked) -->
+    <div id="anomaly-counter" style="display:none;">
+        <span class="cnt-num">0</span><span class="cnt-sep"> / 5</span><span class="cnt-label"> ANOMALIES</span>
+    </div>
+
+    <!-- Brief flash message on discovery -->
+    <div id="discovery-msg"></div>
 
     <!-- Frost vignette — always visible, purely CSS -->
     <div id="frost"></div>

@@ -112,6 +112,49 @@ body {
     user-select: none;
 }
 
+/* ── Anomaly counter (top-right) ───────────────────── */
+#anomaly-counter {
+    position: fixed;
+    top: 18px;
+    right: 28px;
+    z-index: 10;
+    pointer-events: none;
+    font-size: 0.82rem;
+    letter-spacing: 0.18em;
+    color: rgba(155, 232, 255, 0.65);
+}
+#anomaly-counter .cnt-num {
+    font-size: 1.1rem;
+    font-weight: bold;
+    color: #9be8ff;
+    text-shadow: 0 0 8px rgba(100, 200, 255, 0.6);
+}
+#anomaly-counter.complete {
+    color: #00ffcc;
+}
+#anomaly-counter.complete .cnt-num {
+    color: #00ffcc;
+    text-shadow: 0 0 12px #00ffcc, 0 0 28px #00ffcc;
+}
+
+/* ── Discovery flash message (screen centre) ────────── */
+#discovery-msg {
+    position: fixed;
+    top: 42%;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 11;
+    pointer-events: none;
+    font-size: 0.9rem;
+    letter-spacing: 0.35em;
+    color: #9be8ff;
+    text-align: center;
+    opacity: 0;
+    transition: opacity 0.35s ease;
+    text-shadow: 0 0 14px rgba(100, 200, 255, 0.8);
+    white-space: nowrap;
+}
+
 /* ── Frost vignette ────────────────────────────────── */
 #frost {
     position: fixed;
