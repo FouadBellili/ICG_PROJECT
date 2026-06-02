@@ -155,6 +155,57 @@ body {
     white-space: nowrap;
 }
 
+/* ── Mobile virtual joystick ───────────────────────── */
+#joystick {
+    position: fixed;
+    width: 110px;
+    height: 110px;
+    border-radius: 50%;
+    background: rgba(100, 180, 255, 0.08);
+    border: 1px solid rgba(100, 180, 255, 0.25);
+    pointer-events: none;
+    z-index: 15;
+    opacity: 0;
+    transition: opacity 0.15s;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    bottom: 80px;
+    left: 40px;
+}
+#joystick-dot {
+    width: 38px;
+    height: 38px;
+    border-radius: 50%;
+    background: rgba(155, 232, 255, 0.55);
+    border: 1px solid rgba(155, 232, 255, 0.8);
+    transition: transform 0.05s;
+}
+
+/* ── Mobile jump button ─────────────────────────────── */
+#jump-btn {
+    position: fixed;
+    bottom: 155px;
+    right: 38px;
+    width: 64px;
+    height: 64px;
+    border-radius: 50%;
+    background: rgba(100, 180, 255, 0.12);
+    border: 1px solid rgba(100, 180, 255, 0.35);
+    color: rgba(155, 232, 255, 0.85);
+    font-size: 1.5rem;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    z-index: 15;
+    pointer-events: all;
+    user-select: none;
+    -webkit-user-select: none;
+}
+#jump-btn:active {
+    background: rgba(100, 180, 255, 0.28);
+}
+
 /* ── Frost vignette ────────────────────────────────── */
 #frost {
     position: fixed;

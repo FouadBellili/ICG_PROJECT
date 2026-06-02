@@ -48,6 +48,8 @@
         const artefacts      = [];
         let   terrainMat, overlayMat, rockMat, spireMat;
 
+        const IS_MOBILE = ('ontouchstart' in window) || navigator.maxTouchPoints > 0;
+
         let keyW=false, keyS=false, keyA=false, keyD=false;
         let walkPhase    = 0;
         let prevStepCycle = 0;
@@ -55,6 +57,16 @@
         let isOnGround   = true;
         let currentLore  = -1;
         const discovered = new Set();   // indices of found artefacts
+
+        // Mobile touch state
+        let mobileActive = false;
+        let mobileYaw    = 0;
+        let mobilePitch  = 0;
+        const touchState = new Map();   // pointerId → {side,startX,startY,x,y}
+        const JOY_RADIUS = 55;          // pixels before joystick is at max
+
+        // True when the player is actively controlling the scene
+        const isPlaying = () => IS_MOBILE ? mobileActive : sceneElements.controls.isLocked;
 
         // Wind — slowly shifting direction, drives snow drift
         const wind = { x: 0, z: 0 };
@@ -329,14 +341,103 @@
             const crosshair = document.getElementById('crosshair');
             const lorePanel = document.getElementById('lore-panel');
 
-            overlay.addEventListener('click', () => {
-                controls.lock();
+            const counter    = document.getElementById('anomaly-counter');
+            const compass    = document.getElementById('compass');
+            const jumpBtn    = document.getElementById('jump-btn');
+
+            function enterGame() {
                 if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
+                overlay.style.display  = 'none';
+                hud.style.display      = 'flex';
+                counter.style.display  = 'block';
+                compass.style.display  = 'block';
+                if (!IS_MOBILE) crosshair.style.display = 'block';
+                if (IS_MOBILE)  jumpBtn.style.display   = 'flex';
+            }
+            function exitGame() {
+                overlay.style.display  = 'flex';
+                hud.style.display      = 'none';
+                crosshair.style.display= 'none';
+                counter.style.display  = 'none';
+                compass.style.display  = 'none';
+                jumpBtn.style.display  = 'none';
+                lorePanel.style.opacity= '0';
+            }
+
+            if (IS_MOBILE) {
+                // Mobile: tap overlay to enter — no pointer lock needed
+                overlay.addEventListener('touchend', e => { e.preventDefault(); mobileActive = true; enterGame(); }, { passive: false });
+                overlay.addEventListener('click',    () => { mobileActive = true; enterGame(); });
+                // Update overlay hint for touch
+                document.getElementById('overlay-click').textContent = 'TAP TO ENTER';
+                document.getElementById('overlay-hint').textContent  = 'Left thumb · Move   Right thumb · Look   Button · Jump';
+            } else {
+                overlay.addEventListener('click', () => { controls.lock(); if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume(); });
+                controls.addEventListener('lock',   enterGame);
+                controls.addEventListener('unlock', exitGame);
+            }
+        }
+
+        // ─────────────────────────────────────────────
+        // MOBILE TOUCH CONTROLS
+        // ─────────────────────────────────────────────
+        function setupMobileControls() {
+            if (!IS_MOBILE) return;
+
+            const joystickEl = document.getElementById('joystick');
+            const joystickDot = document.getElementById('joystick-dot');
+
+            document.addEventListener('touchstart', e => {
+                if (!mobileActive) return;
+                e.preventDefault();
+                for (const t of e.changedTouches) {
+                    const side = t.clientX < window.innerWidth / 2 ? 'left' : 'right';
+                    touchState.set(t.identifier, { side, startX:t.clientX, startY:t.clientY, x:t.clientX, y:t.clientY });
+                    if (side === 'left') {
+                        joystickEl.style.left   = (t.clientX - 55) + 'px';
+                        joystickEl.style.bottom = (window.innerHeight - t.clientY - 55) + 'px';
+                        joystickEl.style.opacity = '1';
+                    }
+                }
+            }, { passive: false });
+
+            document.addEventListener('touchmove', e => {
+                if (!mobileActive) return;
+                e.preventDefault();
+                for (const t of e.changedTouches) {
+                    const s = touchState.get(t.identifier);
+                    if (!s) continue;
+                    if (s.side === 'right') {
+                        // Apply look delta immediately — smoother than reading in RAF
+                        mobileYaw   -= (t.clientX - s.x) * 0.004;
+                        mobilePitch -= (t.clientY - s.y) * 0.004;
+                        mobilePitch  = Math.max(-1.3, Math.min(1.3, mobilePitch));
+                    } else {
+                        // Update joystick dot position
+                        const dx = Math.max(-JOY_RADIUS, Math.min(JOY_RADIUS, t.clientX - s.startX));
+                        const dy = Math.max(-JOY_RADIUS, Math.min(JOY_RADIUS, t.clientY - s.startY));
+                        joystickDot.style.transform = `translate(${dx}px, ${dy}px)`;
+                    }
+                    s.x = t.clientX; s.y = t.clientY;
+                }
+            }, { passive: false });
+
+            document.addEventListener('touchend', e => {
+                for (const t of e.changedTouches) {
+                    const s = touchState.get(t.identifier);
+                    if (s?.side === 'left') {
+                        joystickEl.style.opacity = '0';
+                        joystickDot.style.transform = 'translate(0,0)';
+                    }
+                    touchState.delete(t.identifier);
+                }
             });
-            const counter = document.getElementById('anomaly-counter');
-            const compass = document.getElementById('compass');
-            controls.addEventListener('lock',   () => { overlay.style.display='none'; hud.style.display='flex'; crosshair.style.display='block'; counter.style.display='block'; compass.style.display='block'; });
-            controls.addEventListener('unlock', () => { overlay.style.display='flex'; hud.style.display='none'; crosshair.style.display='none'; counter.style.display='none'; compass.style.display='none'; lorePanel.style.opacity='0'; });
+
+            // Jump button
+            document.getElementById('jump-btn').addEventListener('touchstart', e => {
+                e.preventDefault();
+                if (isOnGround) { velocityY = JUMP_FORCE; isOnGround = false; }
+            }, { passive: false });
         }
 
         // ─────────────────────────────────────────────
@@ -705,28 +806,46 @@
             if (stars) stars.rotation.y=t*0.005;
 
             // ── Movement + physics ───────────────────
-            const moving = controls.isLocked && (keyW||keyS||keyA||keyD);
-            if (controls.isLocked) {
-                if (keyW) controls.moveForward( MOVE_SPEED);
-                if (keyS) controls.moveForward(-MOVE_SPEED);
-                if (keyD) controls.moveRight(   MOVE_SPEED);
-                if (keyA) controls.moveRight(  -MOVE_SPEED);
+            let moving = false;
+            if (isPlaying()) {
+                if (IS_MOBILE) {
+                    // ── Mobile: joystick movement + touch camera ─
+                    let joyX = 0, joyZ = 0;
+                    for (const [,ts] of touchState) {
+                        if (ts.side === 'left') {
+                            joyX = Math.max(-1, Math.min(1, (ts.x - ts.startX) / JOY_RADIUS));
+                            joyZ = Math.max(-1, Math.min(1, (ts.y - ts.startY) / JOY_RADIUS));
+                        }
+                    }
+                    if (joyX !== 0 || joyZ !== 0) {
+                        const fwd = { x: Math.sin(mobileYaw), z: Math.cos(mobileYaw) };
+                        const rgt = { x: Math.cos(mobileYaw), z:-Math.sin(mobileYaw) };
+                        cam.position.x += (-joyZ * fwd.x + joyX * rgt.x) * MOVE_SPEED;
+                        cam.position.z += (-joyZ * fwd.z + joyX * rgt.z) * MOVE_SPEED;
+                        moving = true;
+                    }
+                    cam.rotation.order = 'YXZ';
+                    cam.rotation.y = mobileYaw;
+                    cam.rotation.x = mobilePitch;
+                } else {
+                    // ── Desktop: keyboard + PointerLockControls ──
+                    if (keyW) controls.moveForward( MOVE_SPEED);
+                    if (keyS) controls.moveForward(-MOVE_SPEED);
+                    if (keyD) controls.moveRight(   MOVE_SPEED);
+                    if (keyA) controls.moveRight(  -MOVE_SPEED);
+                    moving = keyW || keyS || keyA || keyD;
+                }
 
                 resolveCollisions();
 
-                // Gravity + jump
+                // Gravity + jump (shared)
                 const floorY = worldHeight(cam.position.x, cam.position.z) + EYE_HEIGHT;
                 velocityY += GRAVITY;
                 cam.position.y += velocityY;
-
                 if (cam.position.y <= floorY) {
                     if (velocityY < -0.08) playLandSound();
-                    cam.position.y = floorY;
-                    velocityY = 0;
-                    isOnGround = true;
-                } else {
-                    isOnGround = false;
-                }
+                    cam.position.y = floorY; velocityY = 0; isOnGround = true;
+                } else { isOnGround = false; }
 
                 // Head bob when walking on ground
                 if (moving && isOnGround) {
@@ -768,7 +887,7 @@
             });
 
             // ── Proximity: lore display + discovery ──
-            if (controls.isLocked) {
+            if (isPlaying()) {
                 const lorePanel = document.getElementById('lore-panel');
                 let nearest=-1, nearDist=Infinity;
                 artefacts.forEach((art,idx) => {
@@ -791,7 +910,7 @@
             }
 
             sceneElements.renderer.render(sg, cam);
-            if (controls.isLocked) drawCompass();
+            if (isPlaying()) drawCompass();
             requestAnimationFrame(computeFrame);
         }
 
@@ -810,7 +929,7 @@
                 case 'KeyA': keyA=true; break; case 'KeyD': keyD=true; break;
                 case 'Space':
                     e.preventDefault();
-                    if (isOnGround && sceneElements.controls.isLocked) {
+                    if (!IS_MOBILE && isOnGround && sceneElements.controls.isLocked) {
                         velocityY = JUMP_FORCE; isOnGround = false;
                     }
                     break;
@@ -828,6 +947,7 @@
         // ─────────────────────────────────────────────
         initAudio();
         initScene();
+        setupMobileControls();
         initMaterials();
         buildFixedObjects(sceneElements.sceneGraph);
         requestAnimationFrame(computeFrame);
@@ -864,6 +984,14 @@
 
     <!-- Compass radar (bottom-right, shown when locked) -->
     <canvas id="compass" width="120" height="120" style="display:none;"></canvas>
+
+    <!-- Mobile virtual joystick (repositioned on touchstart) -->
+    <div id="joystick">
+        <div id="joystick-dot"></div>
+    </div>
+
+    <!-- Mobile jump button -->
+    <div id="jump-btn" style="display:none;">&#8593;</div>
 
     <!-- Frost vignette — always visible, purely CSS -->
     <div id="frost"></div>
